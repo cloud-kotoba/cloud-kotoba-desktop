@@ -156,3 +156,13 @@ A path through scalar text or an inline collection returns null instead of inter
 ### Nested siblings
 
 Deep lookups skip unrelated sibling subtrees and comments, support consistent nondefault indentation, and cannot resolve a leaf outside the selected parent.
+
+## cljk modules
+
+Parts of the Electron main process are written in cljk and compiled by shadow-cljs into one ES module that the TypeScript main imports. Migration from TS is incremental, module by module.
+
+- **Sources.** `src/cljk/kotoba/desktop/*.cljk`. Each file's original extension (`cljs` here) is recorded in `cljk-origin.edn`. shadow-cljs resolves namespaces only from `.cljs`/`.cljc`/`.clj`, so `scripts/cljk-build.mjs` mirrors the sources into the git-ignored `.cljk-build/src`, the same approach as cloud-murakumo's `scripts/cljk-mirror.cljk`. A file with no recorded origin is refused, not guessed.
+- **Build.** `shadow-cljs.edn` build `desktop-main` (`:target :esm`, named exports) writes `src/main/cljk/out/kotoba-desktop.js` (git-ignored). The committed `src/cljk/kotoba-desktop.d.ts` is copied beside it, so TypeScript type-checks the boundary. The build is skipped when no input changed (a sha256 stamp). `npm run cljk` forces it, and `predev`, `prebuild`, `pretest` and `pretypecheck:node` run it, which needs a JDK and the Clojure CLI.
+- **Adapters.** A migrated module keeps a thin TS file with the old signatures (`src/main/kotoba-gateway.ts`, `src/main/profile-cache.ts`). It passes Electron and TS-side facts (for example `app.isPackaged`, `profileHome`) into the cljk functions, which take plain values and return JS data. Callers and their vitest tests are unchanged and exercise the compiled cljk.
+- **Migrated so far.** `kotoba.desktop.gateway` (Hy gateway runtime choice, paths, spawn args and env) and `kotoba.desktop.profile-cache` (profile list invalidation hook).
+

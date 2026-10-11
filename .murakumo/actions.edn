@@ -1,6 +1,6 @@
 {:schema 1
  :control-plane "https://murakumo.cloud/api/actions"
- :repository "cloud-kotoba/org-hermesone-hermes-desktop"
+ :repository "cloud-kotoba/cloud-kotoba-desktop"
 
  ;; Declarative intent only. The commands behind each action id are owned by
  ;; murakumo.cloud (cloud-murakumo src/cloud_murakumo/actions.cljk

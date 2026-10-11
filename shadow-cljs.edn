@@ -1,0 +1,21 @@
+;; cljk modules of the Electron main process, compiled to one ES module that
+;; the TypeScript main imports (src/main/cljk/out/kotoba-desktop.js).
+{:deps {:aliases [:cljs]}
+ :builds
+ {:desktop-main
+  {:target :esm
+   :output-dir "src/main/cljk/out"
+   :runtime :node
+   :js-options {:js-provider :import}
+   :modules {:kotoba-desktop
+             {:exports {gatewayRuntime kotoba.desktop.gateway/gateway-runtime
+                        isHyGateway kotoba.desktop.gateway/hy-gateway?
+                        gatewayDir kotoba.desktop.gateway/gateway-dir
+                        gatewayLauncher kotoba.desktop.gateway/launcher
+                        gatewaySpawnError kotoba.desktop.gateway/spawn-error
+                        gatewayPidPath kotoba.desktop.gateway/pid-path
+                        gatewayArgs kotoba.desktop.gateway/gateway-args
+                        gatewayEnv kotoba.desktop.gateway/gateway-env
+                        invalidateProfileCache kotoba.desktop.profile-cache/invalidate!
+                        onProfileCacheInvalidated kotoba.desktop.profile-cache/on-invalidated}}}
+   :compiler-options {:output-feature-set :es2020}}}}

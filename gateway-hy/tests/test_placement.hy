@@ -61,6 +61,17 @@
     (.assertEqual self (.allowed-set va) (frozenset ["mine"]))
     (.assertEqual self (.allowed-set vb) (frozenset ["theirs"])))
 
+  ;; @lat: [[profile-distribution#Placement#Tests#A held profile has no owner until a newer manifest drops the hold]]
+  (defn test-hold [self]
+    (setv va (.view self self.a))
+    (.adopt va (.manifest self [{"id" "mine" "pin" self.a.did}
+                                {"id" "broken" "pin" self.a.did "hold" "unknown bot"}
+                                {"id" "floating" "hold" "unknown bot"}]))
+    (.assertEqual self (.allowed-set va) (frozenset ["mine"]))
+    (.adopt va (.manifest self [{"id" "mine" "pin" self.a.did} {"id" "broken" "pin" self.a.did}]
+                          :version 2))
+    (.assertEqual self (.allowed-set va) (frozenset ["mine" "broken"])))
+
   ;; @lat: [[profile-distribution#Placement#Tests#An unpinned profile moves only after its owner is silent for a TTL]]
   (defn test-unpinned-failover [self]
     (setv profiles (lfor i (range 40) {"id" f"p{i}" "caps" ["python3"]})

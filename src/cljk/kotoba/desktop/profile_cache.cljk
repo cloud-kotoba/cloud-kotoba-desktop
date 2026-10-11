@@ -1,0 +1,20 @@
+(ns kotoba.desktop.profile-cache
+  "Invalidation hook for the profile list cache in profiles.ts.
+
+  Kept apart so writers that profiles.ts itself imports (profile-meta.ts) can
+  invalidate without an import cycle. profiles.ts registers the listener;
+  anything that changes what `listProfiles()` would return calls
+  `invalidate!`.")
+
+(defonce ^:private listeners (atom []))
+
+(defn invalidate!
+  "Drop cached profile data. Without an id every profile is dropped."
+  ([] (invalidate! nil))
+  ([id] (doseq [listener @listeners] (listener id))))
+
+(defn on-invalidated
+  "Register `listener` (fn [id-or-nil]); returns a function that removes it."
+  [listener]
+  (swap! listeners conj listener)
+  (fn [] (swap! listeners (fn [ls] (vec (remove #(identical? % listener) ls))))))

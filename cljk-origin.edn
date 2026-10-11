@@ -1,0 +1,4 @@
+;; Original extension of every .cljk source, for scripts/cljk-mirror.mjs
+;; (shadow-cljs resolves namespaces only from .cljs/.cljc/.clj).
+{"src/cljk/kotoba/desktop/gateway.cljk" "cljs"
+ "src/cljk/kotoba/desktop/profile_cache.cljk" "cljs"}

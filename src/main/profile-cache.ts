@@ -1,21 +1,18 @@
 /**
  * Invalidation hook for the profile list cache in profiles.ts.
  *
- * Kept in its own module so writers that profiles.ts itself imports (such as
- * profile-meta.ts) can invalidate without an import cycle. profiles.ts
- * registers the listener; anything that changes what `listProfiles()` would
- * return calls `invalidateProfileCache`.
+ * The implementation is cljk (src/cljk/kotoba/desktop/profile_cache.cljk);
+ * this module keeps the TS signatures for profiles.ts and profile-meta.ts.
  */
-
-type Listener = (id?: string) => void;
-const listeners = new Set<Listener>();
+import * as cljk from "./cljk/out/kotoba-desktop.js";
 
 /** Drop cached profile data. Without an id every profile is dropped. */
 export function invalidateProfileCache(id?: string): void {
-  for (const listener of listeners) listener(id);
+  cljk.invalidateProfileCache(id ?? null);
 }
 
-export function onProfileCacheInvalidated(listener: Listener): () => void {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
+export function onProfileCacheInvalidated(
+  listener: (id?: string) => void,
+): () => void {
+  return cljk.onProfileCacheInvalidated((id) => listener(id ?? undefined));
 }

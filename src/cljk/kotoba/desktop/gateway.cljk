@@ -1,0 +1,57 @@
+(ns kotoba.desktop.gateway
+  "Which process serves the local Hermes API for a profile, and how to spawn it.
+
+  - `hy` (default): Kotoba's own gateway in `gateway-hy/`, written in Hy. It
+    speaks the Hermes API and runs Hermes Agent's `AIAgent` in-process.
+  - `hermes`: upstream `hermes gateway` (the pre-Hy behaviour), for messaging
+    platforms and anything the Hy gateway does not serve yet.
+
+  Pure over its inputs: Electron's `app` facts and the profile home are passed
+  in by the TS adapter (`src/main/kotoba-gateway.ts`), so this namespace needs
+  neither Electron nor the TS utils. Values crossing back to TS are JS data."
+  (:require ["node:fs" :as fs]
+            ["node:path" :as path]
+            [clojure.string :as str]))
+
+(defn gateway-runtime
+  "\"hermes\" when KOTOBA_GATEWAY_RUNTIME says so (any case/whitespace),
+  otherwise \"hy\"."
+  [^js env]
+  (let [v (some-> env (aget "KOTOBA_GATEWAY_RUNTIME") str str/trim str/lower-case)]
+    (if (= v "hermes") "hermes" "hy")))
+
+(defn hy-gateway? [env] (= "hy" (gateway-runtime env)))
+
+(defn gateway-dir
+  "`gateway-hy/` next to the app: unpacked resources when packaged, the repo
+  root in dev. KOTOBA_GATEWAY_DIR overrides both."
+  [^js env packaged? resources-path app-path]
+  (or (some-> env (aget "KOTOBA_GATEWAY_DIR") not-empty)
+      (path/join (if packaged? resources-path app-path) "gateway-hy")))
+
+(defn launcher [dir] (path/join dir "kotoba_gateway_main.py"))
+
+(defn spawn-error
+  "Missing-install message, or nil when the Hy gateway can be spawned."
+  [dir]
+  (cond
+    (not (fs/existsSync (launcher dir)))
+    (str "Kotoba Hy gateway not found at " dir ".")
+    (not (fs/existsSync (path/join dir ".deps" "hy")))
+    (str "Hy is not vendored in " (path/join dir ".deps") ". Run `npm run gateway:deps`.")
+    :else nil))
+
+(defn pid-path
+  "Own pid file, so a running upstream `hermes gateway` is never mistaken for it."
+  [profile-home]
+  (path/join profile-home "kotoba-gateway.pid"))
+
+(defn gateway-args [dir profile-home port]
+  #js [(launcher dir) "--port" (str port) "--pid-file" (pid-path profile-home)])
+
+(defn gateway-env
+  "Env overlay: the Hy gateway reads HERMES_HOME directly (no `--profile`)."
+  [profile-home hermes-repo]
+  #js {:HERMES_HOME profile-home
+       :HERMES_REPO hermes-repo
+       :KOTOBA_GATEWAY_PID_FILE (pid-path profile-home)})

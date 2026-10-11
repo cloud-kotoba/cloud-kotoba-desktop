@@ -200,6 +200,7 @@ Checked after the switch:
 What the measurement and switch surfaced, and how each was resolved.
 
 - **Node key not durable in HERMES_HOME.** `~/.hermes/kotoba-node.key` from 2026-10-08 was gone the next day, cause unknown. Resolved: node key, ledger and peer table now live in `~/.kotoba/homes/<id>/` (id from the home's real path), and files found in HERMES_HOME are moved there once.
+- **A slow pass silenced the host heartbeat.** Under swap thrash (load average about 420) one rescan took about 12 minutes, and the heartbeat was only written between passes, so after 20 minutes hermes-cron-guard started ticking overdue profiles itself, adding load. Resolved: `ShardHost.heartbeat-forever` in `gateway-hy/kotoba_gateway/shard.hy` writes it from its own thread every 60 s, unless the current pass has run longer than 30 minutes (`is-stalled`), so a wedged loop is still handed to the guard.
 - **`profiles/default` shadowed the root home.** The workstation has a `profiles/default` directory with no jobs. The index keyed it as `default`, so the host heartbeat went to `profiles/default/cron/` and the guard saw the root heartbeat age. Resolved: `default` always means HERMES_HOME, as upstream resolves it, and `profiles/default` is skipped.
 - **Ticker heartbeats.** Resolved: run mode writes upstream's markers per profile after each tick and keeps the default home's heartbeat fresh. Profiles with nothing due still beat only at housekeeping (≤ 6 h); accepted.
 - **Delivery without live adapters.** Accepted: no profile on the workstation has messaging-bot credentials, 1,749 of 1,774 enabled jobs deliver `local`, and the rest use the internal bot-chat mailbox that upstream's tick drains.
@@ -249,7 +250,7 @@ The first cut used a murakumo.cloud control plane on D1 (cloud-murakumo #289). O
 - **Ownership.** A pinned profile belongs to its pinned node and nothing else is consulted, so it never runs twice; if that node is down, the profile waits. An unpinned profile goes to the highest weighted-rendezvous score among live, eligible nodes (residency and caps), so a node takes over only after the previous owner has been silent for a full TTL. Unpinned failover is best effort under asymmetric partitions; the phase 3 canary uses pins only.
 - **Shard host.** Placement's `allows` is the shard host's `allow` predicate, checked when scheduling and again right before each tick. Changes in the allowed set re-schedule every profile.
 - **Reachability.** `--also-listen HOST:PORT` adds a listener (for example the tailnet address) next to the loopback one.
-- **Operator tool.** `tools/placement_plan.py` builds and signs the manifest. It pins every profile to the workstation and N canaries to a canary node. Canaries have no `.env` secrets, only `local` deliveries, and the lowest measured cost. Profiles whose `.env` holds keys or tokens are `attested`. Dry run on 2026-10-09: 1,015 profiles, 328 attested, 685 canary candidates.
+- **Operator tool.** `tools/placement_plan.hy` builds and signs the manifest. It pins every profile to the workstation and N canaries to a canary node. Canaries have no `.env` secrets, only `local` deliveries, and the lowest measured cost. Profiles whose `.env` holds keys or tokens are `attested`. Dry run on 2026-10-09: 1,015 profiles, 328 attested, 685 canary candidates.
 
 ### Tests
 
@@ -262,6 +263,10 @@ Manifests signed by another key, tampered, or not newer are refused. An adopted 
 #### A pinned profile has exactly one owner
 
 Each node allows only the profiles pinned to it. A pin to a node outside the manifest gives no owner. Pins hold even when the pinned node is not seen alive.
+
+#### A held profile has no owner until a newer manifest drops the hold
+
+A profile entry with `hold` has no owner, pinned or not, so no node ticks it. A newer manifest without the hold gives it back to its pin.
 
 #### An unpinned profile moves only after its owner is silent for a TTL
 
@@ -278,6 +283,47 @@ One sync pass adopts a newer manifest from a peer, records the peer alive from i
 #### The gateway serves and adopts manifests
 
 `PUT /v1/placement` adopts a newer operator-signed manifest (409 for the same version). `GET` serves it, also to a node named in the manifest. A peer may not push a manifest (local only).
+
+### Holds
+
+A manifest can hold profiles: `placement_plan --hold FILE` marks them, and no node ticks them until a newer manifest drops the hold. Their `jobs.json` is untouched, so the desktop and `hermes cron` still show the jobs as scheduled.
+
+On 2026-10-10 the 617 profiles whose every run in four days REFUSEd `unknown bot` were held (manifest version 1791589399421; this PC now ticks 398). Their scripts default `ITONAMI_ROOT` to `~/github/com-junkawasaki`, but the superproject now lives in `~/github/com-junkawasaki/root`, and the registry left at the old path (`manifest/physical-ai-bots.edn`, written 2026-10-07) lists 3 bots instead of 683. Pointing them at `root/` would restart 616 repo measurements, so they stay held until nodes can run them.
+
+## Fleet secrets
+
+A profile's secrets reach only the node that runs it, through kagi agent grants and upstream Hermes' `command` secret source. No central store and no plaintext on nodes.
+
+Owner side ([[gateway-hy/kotoba_gateway/fleet_secrets.hy]] is the shared code, `gateway-hy/tools/fleet_secrets.hy` the CLI):
+
+- Each profile's `.env` is the kagi item `hermes-env.<profile>`. The env every profile shares (provider keys: `KOTOBA_API_BASE`, `KOTOBA_API_TOKEN`, `CUSTOM_PROVIDER_MURAKUMO_KEY`, `OPENROUTER_API_KEY`) is `hermes-env.fleet`. Both are in compartment `hermes-fleet`.
+- Each node is a kagi agent principal: `kagi agent request --custody file` on the node (identity in `~/.kagi-agent`, `KAGI_IDENTITY_REF=file://…` because launchd cannot use the keychain), `kagi agent approve --fingerprint … --compartment hermes-fleet --ops reveal,list` on the workstation. Enrolled 2026-10-10: benjamin, issachar, joseph, naphtali, zebulun.
+- The owner grants a node only the items of the profiles placement gives it (`kagi agent grant`), and ungrants on a move, which re-keys the item.
+- `vault.edn` is ciphertext, so `replicate` copies it and the agent registry to every node. A node reads offline from its copy: no server, no VMK.
+
+Node side: a staged profile's `config.yaml` gets `secrets.command` pointing at `gateway-hy/tools/kagi_env.hy`. Upstream runs it once per profile home and keeps the printed KEY=VALUE map in that profile's secret scope, never `os.environ` and never disk. The helper prints the fleet env, then the profile's (a profile value wins), each opened with `kagi agent get` (about 3 s per item, a JVM start), and every reveal lands in the node's own signed audit chain with purpose `hermes-cron:<profile>`.
+
+Verified on joseph (2026-10-10): `hermes cron tick` logged `Command helper: applied 4 secrets`, and a script job saw the three non-provider keys set. Upstream strips `OPENROUTER_API_KEY` from script environments on purpose; agent turns still resolve it through the scope.
+
+Limits: a revoked node keeps values it already read, so rotate after a compromise. Upstream caches the helper's result per home for the process lifetime, so a rotated value reaches a node at its next gateway restart.
+
+kagi needed one fix for this: `agent approve` read request files with a parser capped at 4,096-character tokens, shorter than the post-quantum public keys in every request (kotoba-lang/kagi#39).
+
+### Tests
+
+The node helper's choice of items and its failure behaviour, with kagi replaced by a fake `agent get`.
+
+#### A node gets the fleet env plus only its own profile's env
+
+The helper asks kagi for `hermes-env.fleet` and `hermes-env.<profile>` with the node's agent id and a `hermes-cron:<profile>` purpose. A profile value overrides the fleet's, and an absent or never-put item contributes nothing.
+
+#### A kagi failure is an error, not an empty env
+
+Any `kagi agent get` failure other than an absent item raises, so the helper exits non-zero and upstream records the source as failed and retries, instead of running the job without its secrets.
+
+#### Staging a profile adds the kagi helper and keeps other secret sources
+
+`with-secrets-command` sets `secrets.command` to the helper and leaves the rest of `config.yaml`, other secret sources included, unchanged.
 
 ## Capacity
 
@@ -336,3 +382,7 @@ The node key moves from HERMES_HOME to its `~/.kotoba/homes/<id>` directory once
 #### A profiles/default directory never shadows the root home
 
 With both a root `cron/jobs.json` and a `profiles/default` directory, the `default` entry is the root home, and the host heartbeat goes to the root home.
+
+#### The host heartbeat survives slow passes but not a wedged loop
+
+The host heartbeat keeps beating while a scheduler pass is slow (20 min), stops once a pass exceeds the 30 min stall bound, and resumes when the pass ends.

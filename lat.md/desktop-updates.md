@@ -56,7 +56,7 @@ The global packaging product name supplies Electron Builder's Linux install-dire
 
 ## Kotoba fork release channel
 
-The Kotoba fork (`cloud-kotoba/org-hermesone-hermes-desktop`) does not use GitHub releases or GitHub Actions: its feed is electron-updater's `generic` provider at `https://app.kotoba.cloud/download/`, and builds are made on a mac-mini.
+The Kotoba fork (`cloud-kotoba/cloud-kotoba-desktop`) does not use GitHub releases or GitHub Actions: its feed is electron-updater's `generic` provider at `https://app.kotoba.cloud/download/`, and builds are made on a mac-mini.
 
 `electron-builder.yml` sets `publish.provider: generic` with that URL and `dev-app-update.yml` mirrors it, so a fork build never resolves upstream's `fathah/hermes-desktop` releases (which would update it back into Hermes One). GitHub Actions is disabled on the fork repository (`GET /repos/…/actions/permissions` → `enabled: false`); the workflow files above remain upstream's and do not run here.
 

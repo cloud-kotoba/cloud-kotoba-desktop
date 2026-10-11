@@ -5,7 +5,7 @@
 ;;
 ;;   {"type" "kotoba.placement" "version" n "issued_at" t
 ;;    "nodes"    [{"did" "url" "residency" [...] "caps" [...] "weight" w} ...]
-;;    "profiles" [{"id" "residency" "pin" "caps" "cost"} ...]
+;;    "profiles" [{"id" "residency" "pin" "caps" "cost" "hold"} ...]
 ;;    "signer" operator-did "signature" ...}
 ;;
 ;; Every node holds a copy and adopts another only when it is signed by the
@@ -100,7 +100,8 @@
           self.seen {}             ; did -> local time its signed manifest was last fresh
           self.last-allowed (frozenset)
           self.last-error None)
-    (.load self))
+    (.load self)
+    (setv self.last-allowed (.allowed-set self)))
 
   ;; -- manifest --
 
@@ -163,8 +164,11 @@
   ;; -- ownership --
 
   (defn owner [self profile [now None]]
-    "The did that should run `profile` (a manifest entry), or None."
+    "The did that should run `profile` (a manifest entry), or None. A held
+    profile (`\"hold\" reason`) has no owner: no node ticks it until a newer
+    manifest drops the hold. Its jobs.json is untouched."
     (setv now (or now (self.clock)))
+    (when (.get profile "hold") (return None))
     (setv pin (.get profile "pin"))
     (if pin
         (when (.node-entry self pin) pin)
@@ -183,7 +187,13 @@
                          (get p "id")))))
 
   (defn allows [self profile-id [now None]]
-    (in profile-id (.allowed-set self now)))
+    "Without `now`, answers from the set cached by `recompute` (run on adopt
+    and on every sync). The shard host asks once per profile per pass;
+    recomputing here made each pass O(profiles^2) -- a million ownership
+    checks on the workstation's 1,015 profiles."
+    (if (is now None)
+        (in profile-id self.last-allowed)
+        (in profile-id (.allowed-set self now))))
 
   (defn recompute [self]
     (setv allowed (.allowed-set self))

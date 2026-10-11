@@ -41,3 +41,9 @@ release/
 /*.bat
 /*.ps1
 .mcp.json
+
+# cljk build (scripts/cljk-build.mjs)
+.cljk-build/
+.shadow-cljs/
+.cpcache/
+src/main/cljk/out/

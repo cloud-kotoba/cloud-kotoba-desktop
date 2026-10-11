@@ -782,8 +782,9 @@
       (print f"[kotoba-gateway] Refusing --shard run: upstream multiplexer pid {mux} is live and ticks the same profiles. Stop it first, or use --shard observe."
              :file sys.stderr)
       (return 78)))
-  (when (and (not api-key) (not-in args.host LOOPBACK))
-    (print "[kotoba-gateway] Refusing to bind a non-loopback host without API_SERVER_KEY."
+  (setv bind-hosts (+ [args.host] (lfor spec args.also-listen (get (.rsplit spec ":" 1) 0))))
+  (when (and (not api-key) (any (gfor h bind-hosts (not-in h LOOPBACK))))
+    (print "[kotoba-gateway] Refusing to bind a non-loopback host (--host or --also-listen) without API_SERVER_KEY."
            :file sys.stderr)
     (return 78))
   (setv backend (make-backend args.backend)

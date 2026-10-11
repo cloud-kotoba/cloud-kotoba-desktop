@@ -1,4 +1,4 @@
-# Kotoba desktop (`cloud-kotoba/org-hermesone-hermes-desktop`)
+# Kotoba desktop (`cloud-kotoba/cloud-kotoba-desktop`)
 
 **Kotoba** is the desktop app for [app.kotoba.cloud](https://app.kotoba.cloud/):
 a native Electron app that installs, configures and chats with
@@ -8,9 +8,11 @@ from [kotoba.cloud/account](https://kotoba.cloud/account)) as the first,
 recommended provider.
 
 It is a **fork of [`fathah/hermes-desktop`](https://github.com/fathah/hermes-desktop)
-("Hermes One", [hermesone.org](https://hermesone.org), MIT)** — hence the
-origin-plane name `org-hermesone-hermes-desktop` (the authority's registrable
-domain reversed + the upstream subject; `manifest/origin-domains.edn`).
+("Hermes One", [hermesone.org](https://hermesone.org), MIT)**. The repository
+was `cloud-kotoba/org-hermesone-hermes-desktop` (the upstream authority's
+domain reversed + subject) until 2026-10-10, when it was renamed
+`cloud-kotoba/cloud-kotoba-desktop` (kotoba.cloud reversed + desktop); GitHub
+redirects the old name.
 Upstream's README is kept verbatim as [`README.upstream.md`](README.upstream.md);
 the [LICENSE](LICENSE) is upstream's MIT notice and applies to this fork.
 

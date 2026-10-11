@@ -60,7 +60,7 @@ Avoid `foo?` and `foo!` names: they mangle to `hyx_fooXquestion_markX`, which Py
 
 `npm run gateway:hy2py` compiles each Hy module with Hy's own compiler and writes the Python source to `gateway-hy/py/`, for review and for diffing against upstream.
 
-The tool is `gateway-hy/tools/hy2py.py`. Its output is gitignored and read-only; the Hy files remain the source of truth.
+The tool is `gateway-hy/tools/hy2py.hy`. Its output is gitignored and read-only; the Hy files remain the source of truth.
 
 The interop test compiles that view and fails if any `hyx_` name appears.
 

@@ -3,7 +3,7 @@
 
 (import json os sqlite3 tempfile threading time unittest
         datetime [datetime timezone timedelta])
-(import kotoba_gateway.shard [ProfileIndex ShardHost cost-report live-multiplexer
+(import kotoba_gateway.shard [ProfileIndex ShardHost HOST-STALL-SECONDS cost-report live-multiplexer
                               profile-schedule]
         kotoba_gateway.server [default-state-dir])
 
@@ -144,13 +144,16 @@
     (setv by-name (dict beats))
     (.assertIsNone self (get by-name "ok"))
     (.assertIn self "boom" (get by-name "bad"))
-    (.assertIsNone self (get by-name "default"))          ; host-level beat
+    (.assertNotIn self "default" by-name "the host beat has its own thread, not step")
     ;; host beat at most once a minute
-    (setv n (len (lfor [nm _] beats :if (= nm "default") nm)))
-    (setv clock.t (+ T0 30)) (.step host)
-    (.assertEqual self (len (lfor [nm _] beats :if (= nm "default") nm)) n)
-    (setv clock.t (+ T0 61)) (.step host)
-    (.assertEqual self (len (lfor [nm _] beats :if (= nm "default") nm)) (+ n 1)))
+    (defn host-beats [] (len (lfor [nm _] beats :if (= nm "default") nm)))
+    (.host-heartbeat host T0)
+    (.assertEqual self (host-beats) 1)
+    (.host-heartbeat host (+ T0 30))
+    (.assertEqual self (host-beats) 1)
+    (.host-heartbeat host (+ T0 61))
+    (.assertEqual self (host-beats) 2)
+    (.assertIsNone self (get (dict beats) "default")))
 
   ;; @lat: [[profile-distribution#Shard host implementation#Tests#Observe mode writes no heartbeats]]
   (defn test-observe-writes-nothing [self]
@@ -175,7 +178,26 @@
                           :rescan-seconds 30 :housekeeping-seconds 1e9
                           :heartbeat-fn (fn [name home error] (.append beats home))))
     (.host-heartbeat host T0)
-    (.assertEqual self beats [self.home])))
+    (.assertEqual self beats [self.home]))
+
+  ;; @lat: [[profile-distribution#Shard host implementation#Tests#The host heartbeat survives slow passes but not a wedged loop]]
+  (defn test-host-heartbeat-during-slow-pass [self]
+    (setv beats []
+          clock (Clock T0)
+          host (ShardHost (ProfileIndex self.home) (fn [n h]) :mode "run" :clock clock
+                          :heartbeat-fn (fn [name home error] (.append beats clock.t))))
+    ;; a pass that started 20 min ago is slow, not dead: keep beating
+    (setv host.pass-started (- T0 1200))
+    (.host-heartbeat host T0)
+    (.assertEqual self beats [T0])
+    ;; past the stall bound the beats stop, so the guard can take over
+    (setv clock.t (+ T0 (- HOST-STALL-SECONDS 1200)))
+    (.host-heartbeat host clock.t)
+    (.assertEqual self beats [T0])
+    ;; the pass finishes: beats resume
+    (setv host.pass-started None)
+    (.host-heartbeat host clock.t)
+    (.assertEqual self beats [T0 clock.t])))
 
 (defclass NodeState [Fixture]
   ;; @lat: [[profile-distribution#Shard host implementation#Tests#Node state lives outside HERMES_HOME]]

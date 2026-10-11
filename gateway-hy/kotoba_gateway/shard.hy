@@ -25,6 +25,11 @@
       ;; The default home's ticker heartbeat is the host-level liveness signal
       ;; (hermes-cron-guard falls back to ticking itself after 20 min stale).
       HOST-HEARTBEAT-SECONDS 60
+      ;; ... written from its own thread, so a slow pass (a rescan took 12 min
+      ;; under swap thrash on 2026-10-09) doesn't silence it. A pass running
+      ;; longer than this counts as wedged and the beats stop, so the guard
+      ;; still takes over from a truly stuck loop.
+      HOST-STALL-SECONDS 1800
       COST-EMA-ALPHA 0.3
       HISTORY-DAYS 7)
 
@@ -161,6 +166,7 @@
           ;; tick, so a lease lost between the two is never acted on.
           self.allow (or allow (fn [name] True))
           self.last-host-beat None
+          self.pass-started None     ; clock time the current step began, or None
           self.last-error None
           self.heap []
           self.version {}            ; name -> int, for lazy heap deletion
@@ -295,10 +301,16 @@
 
   ;; -- loop --
 
+  (defn is-stalled [self now]
+    "The current scheduler pass has run longer than HOST-STALL-SECONDS."
+    (setv started self.pass-started)
+    (and (is-not started None) (>= (- now started) HOST-STALL-SECONDS)))
+
   (defn host-heartbeat [self now]
     "Run mode: keep the default home's ticker heartbeat fresh while the loop
-    is alive, so watchers of that file see a live cron ticker."
+    makes progress, so watchers of that file see a live cron ticker."
     (when (and self.heartbeat-fn
+               (not (.is-stalled self now))
                (or (is self.last-host-beat None)
                    (>= (- now self.last-host-beat) HOST-HEARTBEAT-SECONDS)))
       (setv self.last-host-beat now)
@@ -308,18 +320,23 @@
 
   (defn step [self]
     "One scheduler pass: rescan if due, fire what's due. Returns seconds to sleep."
-    (setv now (self.clock))
-    (when (or (is self.last-rescan None) (>= (- now self.last-rescan) self.rescan-seconds))
-      (.rescan self))
-    (.host-heartbeat self now)
-    (for [[name due] (.pop-due self now)]
-      (.fire self name due now))
+    (setv now (self.clock)
+          self.pass-started now)
+    (try
+      (when (or (is self.last-rescan None) (>= (- now self.last-rescan) self.rescan-seconds))
+        (.rescan self))
+      (for [[name due] (.pop-due self now)]
+        (.fire self name due now))
+      (finally (setv self.pass-started None)))
     (setv nd (.next-due self)
           until-rescan (- (+ self.last-rescan self.rescan-seconds) (self.clock))
           wait (if (is nd None) until-rescan (min until-rescan (- nd (self.clock)))))
-    (when self.heartbeat-fn
-      (setv wait (min wait HOST-HEARTBEAT-SECONDS)))
     (max 0.05 wait))
+
+  (defn heartbeat-forever [self stop-event]
+    (while (not (.is-set stop-event))
+      (.host-heartbeat self (self.clock))
+      (.wait stop-event HOST-HEARTBEAT-SECONDS)))
 
   (defn run-forever [self stop-event]
     (while (not (.is-set stop-event))
@@ -331,6 +348,9 @@
     (setv stop (threading.Event))
     (.start (threading.Thread :target self.run-forever :args #(stop)
                               :name "kotoba-shard" :daemon True))
+    (when self.heartbeat-fn
+      (.start (threading.Thread :target self.heartbeat-forever :args #(stop)
+                                :name "kotoba-shard-heartbeat" :daemon True)))
     stop)
 
   (defn status [self]

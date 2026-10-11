@@ -26,6 +26,14 @@ const python =
   process.env.HERMES_PYTHON ||
   (existsSync(hermesPython) ? hermesPython : "python3");
 
+// Hy tools run as `python -m hy tools/<x>.hy` with the vendored Hy on the path.
+const hyEnv = {
+  ...process.env,
+  PYTHONPATH: [join(gw, ".deps"), gw, process.env.PYTHONPATH]
+    .filter(Boolean)
+    .join(":"),
+};
+
 // Plain Node script linted with the TypeScript preset (see audit-production-dependencies.mjs).
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 function run(cmd, args, opts = {}) {
@@ -68,9 +76,15 @@ if (cmd === "deps") {
     ]);
   }
 } else if (cmd === "test") {
-  code = run(python, [join(gw, "tools", "run_tests.py")]);
+  code = run(python, ["-m", "hy", join(gw, "tools", "run_tests.hy")], {
+    env: hyEnv,
+  });
 } else if (cmd === "hy2py") {
-  code = run(python, [join(gw, "tools", "hy2py.py"), ...process.argv.slice(3)]);
+  code = run(
+    python,
+    ["-m", "hy", join(gw, "tools", "hy2py.hy"), ...process.argv.slice(3)],
+    { env: hyEnv },
+  );
 } else if (cmd === "start") {
   code = run(
     process.env.HERMES_PYTHON || hermesPython,
