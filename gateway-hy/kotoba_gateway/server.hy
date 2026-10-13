@@ -739,7 +739,7 @@
   ;; Shard host (profile distribution phase 2): tick only due profiles.
   (.add_argument p "--shard" :default (os.environ.get "KOTOBA_SHARD" "off")
                  :choices ["off" "observe" "run"])
-  (.add_argument p "--shard-scheduler" :default (os.environ.get "KOTOBA_SHARD_SCHEDULER" "hermes")
+  (.add_argument p "--shard-scheduler" :default (os.environ.get "KOTOBA_SHARD_SCHEDULER" "kotoba")
                  :choices ["hermes" "kotoba"]
                  :help "run due profiles through Hermes or the Kotoba cron implementation")
   (.add_argument p "--max-turns" :type int
