@@ -17,7 +17,9 @@ Run events keep upstream names and key order (`event`, `run_id`, `timestamp`, â€
 
 ## Hermes Agent backend
 
-The default backend builds a Hermes Agent `AIAgent` in-process with upstream's runtime helpers, so sessions persist to the profile's `state.db` exactly as upstream API turns do. `KOTOBA_GATEWAY_BACKEND=kotoba` selects the opt-in Kotoba backend, which starts `itonami-agent bridge` as a subprocess and passes the desktop history, instructions, profile, model, cwd and resolved API-server tool names.
+The default backend builds a Hermes Agent `AIAgent` in-process; `KOTOBA_GATEWAY_BACKEND=kotoba` selects the opt-in Kotoba subprocess bridge.
+
+The Hermes backend uses upstream's runtime helpers, so sessions persist to the profile's `state.db` exactly as upstream API turns do. The Kotoba backend starts `itonami-agent bridge` and passes desktop history, instructions, profile, model, cwd and resolved API-server tool names.
 
 The Kotoba backend resolves enabled Hermes toolsets to concrete tool names before sending them. The CLJK bridge rejects any tool it does not implement before making a model call. Tool approvals use the desktop's `request_id` and `choice` (`once` or `deny`) contract; a denial is returned to the agent as a tool error without running the tool. This backend is opt-in until tool parity and a full desktop run are verified.
 
