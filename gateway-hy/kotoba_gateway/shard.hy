@@ -14,7 +14,7 @@
 ;;   run      tick due profiles. Refuses to start while an upstream
 ;;            multiplexer is live, so no job can run twice.
 
-(import heapq json os sqlite3 subprocess sys threading time
+(import heapq json os re shlex shutil sqlite3 subprocess sys threading time
         pathlib [Path]
         collections [deque]
         concurrent.futures [ThreadPoolExecutor]
@@ -133,6 +133,21 @@
       (when (and (not (.startswith name ".")) (!= name "default") (os.path.isdir home))
         (.append out [name home]))))
   out)
+
+(defn profile-home-for [hermes-home name]
+  (if (= name "default") hermes-home (os.path.join hermes-home "profiles" name)))
+
+(defn kotoba-adopted-profile? [home]
+  "Kotoba owns a profile only when both the runtime manifest and Hermes park marker agree."
+  (setv manifest (os.path.join home "itonami.edn")
+        parked (os.path.join home "gateway.parked"))
+  (when (or (not (os.path.isfile manifest)) (not (os.path.isfile parked)))
+    (return False))
+  (try
+    (with [f (open manifest :encoding "utf-8")]
+      (setv text (.read f)))
+    (except [OSError] (return False)))
+  (bool (re.search r"(?s):runtime\s*\{[^}]*:scheduler\s+:itonami(?:\s|[,}])" text)))
 
 (defclass ProfileIndex []
   "Each profile's earliest due time, re-read only when its jobs.json changes."
@@ -454,6 +469,48 @@
     (ensure-profile-hy-runtime home)
     (with [(_profile_cron_scope home)]
       (tick :verbose False :adapters None :loop None :sync True))))
+
+(defn kotoba-tick [hermes-home]
+  "tick-fn that delegates each already-adopted profile to its Kotoba cron implementation."
+  (setv configured (os.environ.get "KOTOBA_CRON_COMMAND")
+        binary (or (os.environ.get "ITONAMI_AGENT_BIN") (shutil.which "itonami-agent"))
+        command (cond configured (shlex.split configured)
+                      binary [binary]
+                      True []))
+  (when (not command)
+    (raise (RuntimeError "Kotoba scheduler selected but itonami-agent is unavailable; set KOTOBA_CRON_COMMAND or ITONAMI_AGENT_BIN")))
+  (setv hy-deps (os.path.join (str (.parent (.parent (.resolve (Path __file__))))) ".deps"))
+  (fn [name home]
+    (setv env (dict os.environ)
+          argv (+ command ["-p" name "cron" "tick"]))
+    ;; Hy is vendored beside the running gateway. Pass its location to the
+    ;; agent's script runner; the Hermes Python environment need not install it.
+    (.update env {"HERMES_HOME" hermes-home "KOTOBA_HY_DEPS" hy-deps})
+    (setv result (subprocess.run argv :cwd home :env env :capture_output True :text True :timeout 3600))
+    (when (!= result.returncode 0)
+      (raise (RuntimeError (or (.strip result.stderr) (.strip result.stdout)
+                               f"itonami-agent cron tick exited {result.returncode}"))))
+    (when (.startswith (.strip result.stdout) "tick skipped:")
+      (raise (RuntimeError (.strip result.stdout))))
+    result))
+
+(defn kotoba-heartbeat []
+  "Record the resident Kotoba gateway PID in Hermes-compatible heartbeat markers."
+  (fn [name home error]
+    (when (not (kotoba-adopted-profile? home))
+      (return))
+    (setv cron-dir (os.path.join home "cron"))
+    (os.makedirs cron-dir :exist_ok True)
+    (with [f (open (os.path.join cron-dir "ticker_heartbeat") "w" :encoding "utf-8")]
+      (.write f f"{(time.time)} {(os.getpid)}"))
+    (if error
+        (with [f (open (os.path.join cron-dir "ticker_last_error") "w" :encoding "utf-8")]
+          (.write f f"{(time.time)}\n{error}\n"))
+        (do
+          (with [f (open (os.path.join cron-dir "ticker_last_success") "w" :encoding "utf-8")]
+            (.write f (str (time.time))))
+          (when (os.path.isfile (os.path.join cron-dir "ticker_last_error"))
+            (os.remove (os.path.join cron-dir "ticker_last_error")))))))
 
 (defn upstream-heartbeat []
   "heartbeat-fn that records ticker liveness with Hermes' own markers, in the

@@ -46,6 +46,7 @@
         kotoba_gateway.runs [RunRegistry run-event TERMINAL-STATUSES]
         kotoba_gateway.placement [Placement]
         kotoba_gateway.shard [ProfileIndex ShardHost cost-report live-multiplexer
+                              kotoba-adopted-profile? kotoba-heartbeat kotoba-tick
                               upstream-heartbeat upstream-tick])
 
 (setv MAX-BODY-BYTES (* 32 1024 1024)
@@ -738,6 +739,9 @@
   ;; Shard host (profile distribution phase 2): tick only due profiles.
   (.add_argument p "--shard" :default (os.environ.get "KOTOBA_SHARD" "off")
                  :choices ["off" "observe" "run"])
+  (.add_argument p "--shard-scheduler" :default (os.environ.get "KOTOBA_SHARD_SCHEDULER" "hermes")
+                 :choices ["hermes" "kotoba"]
+                 :help "run due profiles through Hermes or the Kotoba cron implementation")
   (.add_argument p "--max-turns" :type int
                  :default (int (os.environ.get "KOTOBA_SHARD_MAX_TURNS" (max 1 (// (or (os.cpu_count) 2) 2)))))
   (.add_argument p "--reserved-cron-profile" :action "append" :default []
@@ -809,7 +813,7 @@
     (print (json.dumps (cost-report home :nodes args.nodes :turns-per-node args.turns-per-node)
                        :indent 2 :ensure_ascii False))
     (return 0))
-  (when (and (= args.shard "run") (not args.shard-force))
+  (when (and (= args.shard "run") (= args.shard-scheduler "hermes") (not args.shard-force))
     (setv mux (live-multiplexer home))
     (when mux
       (print f"[kotoba-gateway] Refusing --shard run: upstream multiplexer pid {mux} is live and ticks the same profiles. Stop it first, or use --shard observe."
@@ -835,16 +839,28 @@
           gateway.placement placement))
   (when (!= args.shard "off")
     (setv gateway.shard (ShardHost (ProfileIndex home)
-                                   (if (= args.shard "run") (upstream-tick) None)
+                                   (if (!= args.shard "run") None
+                                       (if (= args.shard-scheduler "kotoba") (kotoba-tick home) (upstream-tick)))
                                    :mode args.shard :max-turns args.max-turns
                                    :reserved-profiles args.reserved_cron_profile
                                    :rescan-seconds args.shard-rescan-seconds
-                                   :heartbeat-fn (when (= args.shard "run") (upstream-heartbeat))
-                                   :allow (when placement (fn [name] (.allows placement name)))))
+                                   :heartbeat-fn (when (= args.shard "run")
+                                                   (if (= args.shard-scheduler "kotoba") (kotoba-heartbeat) (upstream-heartbeat)))
+                                   :allow (cond
+                                            (and placement (= args.shard-scheduler "kotoba"))
+                                            (fn [name]
+                                              (and (kotoba-adopted-profile? (if (= name "default") home
+                                                                                 (os.path.join home "profiles" name)))
+                                                   (.allows placement name)))
+                                            placement (fn [name] (.allows placement name))
+                                            (= args.shard-scheduler "kotoba")
+                                            (fn [name] (kotoba-adopted-profile? (if (= name "default") home
+                                                                                     (os.path.join home "profiles" name))))
+                                            True None)))
     (when placement
       (setv placement.on-change (fn [_] (.reapply-leases gateway.shard))))
     (.start gateway.shard)
-    (print f"[kotoba-gateway] shard {args.shard}: max-turns={args.max-turns} rescan={args.shard-rescan-seconds}s"
+    (print f"[kotoba-gateway] shard {args.shard} scheduler={args.shard-scheduler}: max-turns={args.max-turns} rescan={args.shard-rescan-seconds}s"
            :file sys.stderr :flush True))
   (when placement
     (print f"[kotoba-gateway] placement: operator={args.operator-did} version={(.version placement)} allowed={(len (.allowed-set placement))}"
