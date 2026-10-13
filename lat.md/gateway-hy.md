@@ -35,7 +35,9 @@ The desktop's `request_id` and `choice` approval shape is preserved across the g
 
 ### Desktop approval round trip
 
-The backend sends an approval request to the desktop and returns the exact `request_id` and selected `choice` to the CLJK process before the tool can execute.
+The gateway forwards the desktop approval choice to the CLJK agent before a tool can execute.
+
+The run endpoint correlates by `request_id` and accepts only `once` or `deny`; it updates the active run after resolving a pending request.
 
 ## Desktop integration
 

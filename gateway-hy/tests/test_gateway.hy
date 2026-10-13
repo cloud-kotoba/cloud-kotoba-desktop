@@ -1,12 +1,12 @@
 ;; Contract tests for the Hermes API surface, run against the echo backend
 ;; over real HTTP so the wire shapes the desktop parses are what we assert.
 
-(import json os shlex sys tempfile threading unittest
+(import json os shlex sys tempfile threading types unittest
         urllib.request [Request urlopen]
         urllib.error [HTTPError]
         unittest.mock [patch])
 (import kotoba_gateway.backend [Callbacks EchoBackend KotobaBackend]
-        kotoba_gateway.server [make-server split-chat-messages])
+        kotoba_gateway.server [Handler make-server split-chat-messages])
 
 (setv KEY "test-key-0123456789abcdef")
 
@@ -146,7 +146,34 @@
           (.assertEqual self (.get result "final_response") "done")
           (.assertEqual self (get result "usage" "total_tokens") 2)
           (.assertEqual self deltas ["done"])
-          (.assertEqual self (get approvals 0 "choices") ["once" "deny"]))))))
+          (.assertEqual self (get approvals 0 "choices") ["once" "deny"])))))
+
+  ;; @lat: [[gateway-hy#Kotoba backend bridge#Run approval endpoint contract]]
+  (defn test-kotoba-run-approval-handler [self]
+    (let [calls []
+          run (types.SimpleNamespace :status "waiting_for_approval")
+          agent (types.SimpleNamespace :approve (fn [request-id choice]
+                                                  (.append calls [request-id choice]) True))
+          _ (setv run.agent agent)
+          runs (types.SimpleNamespace :get_run (fn [run-id] (if (= run-id "run-1") run None)))
+          handler (object.__new__ Handler)
+          result {}]
+      (setv handler.principal "local"
+            handler.gateway (types.SimpleNamespace :runs runs)
+            handler.raw_body (.encode (json.dumps {"request_id" "req-1" "choice" "once"}) "utf-8")
+            handler.send_json (fn [status payload] (.update result {"status" status "payload" payload}))
+            handler.send_error_json (fn [status message code]
+                                      (.update result {"status" status "error" message "code" code})))
+      (.run-approval handler "run-1")
+      (.assertEqual self run.status "running")
+      (.assertEqual self calls [["req-1" "once"]])
+      (.assertEqual self (get result "status") 202)
+      (.assertEqual self (get result "payload" "choice") "once")
+      (setv result {}
+            handler.raw_body (.encode (json.dumps {"request_id" "req-1" "choice" "session"}) "utf-8"))
+      (.run-approval handler "run-1")
+      (.assertEqual self (get result "status") 400)
+      (.assertEqual self calls [["req-1" "once"]]))))
 
 (when (= __name__ "__main__")
   (unittest.main))

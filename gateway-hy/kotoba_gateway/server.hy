@@ -510,7 +510,7 @@
           choice (.get body "choice"))
     (when (is run None)
       (return (.send-error-json self 404 f"Run {run-id} not found." "run_not_found")))
-    (when-not (in choice #{"once" "deny"})
+    (when (not (in choice #{"once" "deny"}))
       (return (.send-error-json self 400 "Invalid approval choice; expected once or deny."
                                 "invalid_approval_choice")))
     (when (or (not request-id) (is run.agent None) (not (hasattr run.agent "approve")))
