@@ -709,6 +709,8 @@
                  :choices ["off" "observe" "run"])
   (.add_argument p "--max-turns" :type int
                  :default (int (os.environ.get "KOTOBA_SHARD_MAX_TURNS" (max 1 (// (or (os.cpu_count) 2) 2)))))
+  (.add_argument p "--reserved-cron-profile" :action "append" :default []
+                 :help "share one extra bounded tick slot for named critical profiles")
   (.add_argument p "--shard-rescan-seconds" :type float :default 60)
   (.add_argument p "--shard-force" :action "store_true"
                  :help "run mode even while an upstream multiplexer is live (jobs may run twice)")
@@ -804,6 +806,7 @@
     (setv gateway.shard (ShardHost (ProfileIndex home)
                                    (if (= args.shard "run") (upstream-tick) None)
                                    :mode args.shard :max-turns args.max-turns
+                                   :reserved-profiles args.reserved_cron_profile
                                    :rescan-seconds args.shard-rescan-seconds
                                    :heartbeat-fn (when (= args.shard "run") (upstream-heartbeat))
                                    :allow (when placement (fn [name] (.allows placement name)))))
@@ -833,6 +836,7 @@
   (try
     (.serve_forever server)
     (finally
+      (when gateway.shard (.close gateway.shard :wait False))
       (.server_close server)
       (remove-pid-file args.pid-file)))
   0)

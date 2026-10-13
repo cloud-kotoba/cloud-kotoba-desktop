@@ -148,7 +148,7 @@
                   [housekeeping-seconds DEFAULT-HOUSEKEEPING-SECONDS]
                   [clock time.time]
                   [heartbeat-fn None]
-                  [allow None]]
+                  [allow None] [reserved-profiles None]]
     (when (not-in mode #{"observe" "run"})
       (raise (ValueError f"unknown shard mode {mode}")))
     (setv self.index index
@@ -165,6 +165,11 @@
           ;; profile's lease now. Checked when scheduling AND right before a
           ;; tick, so a lease lost between the two is never acted on.
           self.allow (or allow (fn [name] True))
+          self.reserved-profiles (set (or reserved-profiles []))
+          self.closed False
+          self.stop-event None
+          self.reserved-pool (when (and (= mode "run") self.reserved-profiles)
+                               (ThreadPoolExecutor :max_workers 1 :thread_name_prefix "kotoba-shard-reserved"))
           self.last-host-beat None
           self.pass-started None     ; clock time the current step began, or None
           self.last-error None
@@ -252,7 +257,7 @@
   ;; -- firing --
 
   (defn fire [self name due now]
-    (when (not (self.allow name))
+    (when (or self.closed (not (self.allow name)))
       (return))
     (+= self.fires 1)
     (.append self.recent {"profile" name "due" due "at" now
@@ -262,9 +267,9 @@
         ;; the next rescan picks that up. Until then don't re-observe.
         None
         (with [self.lock]
-          (when (in name self.running) (return))
+          (when (or self.closed (in name self.running)) (return))
           (.add self.running name)
-          (.submit self.pool self.tick-profile name))))
+          (.submit (if (in name self.reserved-profiles) self.reserved-pool self.pool) self.tick-profile name))))
 
   (defn reapply-leases [self]
     "The lease set changed: (re)schedule every indexed profile against it."
@@ -345,13 +350,21 @@
       (.wait self.wake (min wait 60))))
 
   (defn start [self]
-    (setv stop (threading.Event))
+    (setv stop (threading.Event) self.stop-event stop)
     (.start (threading.Thread :target self.run-forever :args #(stop)
                               :name "kotoba-shard" :daemon True))
     (when self.heartbeat-fn
       (.start (threading.Thread :target self.heartbeat-forever :args #(stop)
                                 :name "kotoba-shard-heartbeat" :daemon True)))
     stop)
+
+  (defn close [self [wait True]]
+    "Stop admission and cancel unstarted ticks; active jobs retain their receipts."
+    (with [self.lock]
+      (setv self.closed True)
+      (when self.stop-event (.set self.stop-event)))
+    (for [pool [self.pool self.reserved-pool]]
+      (when pool (.shutdown pool :wait wait :cancel_futures True))))
 
   (defn status [self]
     (setv now (self.clock)
@@ -361,6 +374,9 @@
     {"object" "kotoba.shard"
      "mode" self.mode
      "max_turns" self.max-turns
+     "reserved_profiles" (sorted self.reserved-profiles)
+     "reserved_turns" (if self.reserved-pool 1 0)
+     "closed" self.closed
      #** (.totals self.index)
      "heap" (len self.heap)
      "running" (sorted self.running)

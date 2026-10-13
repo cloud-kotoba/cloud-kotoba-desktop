@@ -43,3 +43,6 @@ This directory defines the high-level concepts, business logic, and architecture
 - [[gateway-multiplex]] — which profiles the live default gateway already serves, so a multiplexed profile reads Running instead of Off and its Start action does not spawn a gateway the CLI refuses.
 
 - [[dashboard-clarify]] — Interactive WebSocket clarification cards and answer delivery tests.
+
+- [[kotoba-cloud-gateway]] — the person's scoped sandbox gateway session and its desktop window.
+- [[office-cron-presence]] — durable cron activity in the office and restart deferral while a job is running.
