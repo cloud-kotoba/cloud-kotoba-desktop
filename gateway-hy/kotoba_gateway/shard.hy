@@ -14,7 +14,8 @@
 ;;   run      tick due profiles. Refuses to start while an upstream
 ;;            multiplexer is live, so no job can run twice.
 
-(import heapq json os sqlite3 sys threading time
+(import heapq json os sqlite3 subprocess sys threading time
+        pathlib [Path]
         collections [deque]
         concurrent.futures [ThreadPoolExecutor]
         datetime [datetime timezone timedelta])
@@ -51,6 +52,54 @@
     (isinstance jobs list) (lfor j jobs :if (isinstance j dict) j)
     (isinstance jobs dict) (lfor j (.values jobs) :if (isinstance j dict) j)
     True []))
+
+(defn profile-hy-references [home]
+  "[(script-path interpreter) ...] for this profile's registered Hy scripts."
+  (setv path (os.path.join home "cron" "jobs.json"))
+  (try
+    (with [f (open path :encoding "utf-8")]
+      (setv data (json.load f)))
+    (except [[OSError ValueError]] (return [])))
+  (lfor job (job-list data)
+    field ["script" "monitor_script"]
+    :if (and (is-active-job job)
+             (isinstance (.get job field) str)
+             (.endswith (.lower (.get job field)) ".hy"))
+    [(.get job field) (.get job "interpreter")]))
+
+(defn verify-hy-dispatch [references argv-fn python-check]
+  "Raise before a tick if Hermes cannot dispatch Hy with each selected Python."
+  (setv checked (set))
+  (for [[script interpreter] references]
+    (try
+      (setv [argv _ error] (argv-fn (Path script) interpreter))
+      (except [e Exception]
+        (raise (RuntimeError f"Hermes cannot prepare Hy script {script}: {e}"))))
+    (when (or error (not argv))
+      (raise (RuntimeError f"Hermes cannot prepare Hy script {script}: {error}")))
+    (when (not (any (gfor arg argv (and (isinstance arg str) (in "hy_main" arg)))))
+      (raise (RuntimeError f"Hermes cron dispatcher does not route .hy scripts through Hy: {script}")))
+    (setv python (get argv 0))
+    (when (not-in python checked)
+      (when (not (python-check python))
+        (raise (RuntimeError f"Hy is unavailable in the selected cron Python {python} for {script}")))
+      (.add checked python)))
+  (len references))
+
+(defn ensure-profile-hy-runtime [home]
+  "Verify Hermes' cron dispatcher and selected Python before a profile with Hy jobs ticks."
+  (setv references (profile-hy-references home))
+  (when (not references) (return 0))
+  (try
+    (import cron.scheduler_script [_script_argv])
+    (except [e Exception]
+      (raise (RuntimeError f"Hermes cron script dispatcher is unavailable for Hy jobs: {e}"))))
+  (defn python-has-hy [python]
+    (try
+      (= (subprocess.run [python "-c" "import hy.cmdline"]
+                         :capture_output True :check False :timeout 10).returncode 0)
+      (except [Exception] False)))
+  (verify-hy-dispatch references _script_argv python-has-hy))
 
 (defn is-active-job [job]
   (and (.get job "enabled" True)
@@ -399,6 +448,10 @@
   (import cron.scheduler_provider [_profile_cron_scope]
           cron.scheduler_tick [tick])
   (fn [name home]
+    ;; Do not let an unconverted Hermes dispatcher treat Hy source as Python.
+    ;; Check lazily per profile so staged Hy activation is safe without changing
+    ;; profiles that still contain only Python or shell scripts.
+    (ensure-profile-hy-runtime home)
     (with [(_profile_cron_scope home)]
       (tick :verbose False :adapters None :loop None :sync True))))
 

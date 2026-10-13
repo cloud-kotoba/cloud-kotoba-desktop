@@ -166,6 +166,7 @@ Upstream's multiplexer visits every served profile every 60 s, whether or not an
 - **Bounded ticks.** Ordinary profiles use at most `--max-turns` simultaneous ticks (default half the cores). An optional reserved pool adds one slot. Upstream tick waits for its submitted jobs; fire claims, profile scope and delivery remain upstream's.
 - **Housekeeping.** In run mode every profile is still ticked at least every 6 h, spread by name, so upstream's sweeps and heartbeats keep running for profiles with nothing due.
 - **Modes.** `--shard observe` indexes, schedules and records what would fire without executing anything, so it is safe next to a live multiplexer. `--shard run` ticks, and exits with 78 while an upstream multiplexer is live (`--shard-force` overrides), so no job runs twice.
+- **Hy readiness.** Before ticking a profile that registers a `.hy` script or monitor, Kotoba verifies that Hermes' dispatcher selects its Hy bootstrap and that the selected Python can import `hy.cmdline`. An unsupported runtime fails that profile tick before Hermes can misread Hy as Python; profiles without Hy refs are unaffected.
 - **Status and cost.** `GET /v1/shard` reports profiles, jobs, heap size, fires, rescan time, CPU and memory. `--shard-report` prints per-profile cost (EMA of run duration) and fire rate from the last 7 days of `cron/executions.db`.
 
 ### Measurements
@@ -237,6 +238,18 @@ A reserved profile begins while an ordinary tick is blocked, using only one addi
 #### Reserved ticks retain lease checks
 
 A reserved profile without a lease is not dispatched. A reservation changes queue placement and grants no authority.
+
+#### Kotoba detects registered Hy scripts
+
+The profile scanner finds `.hy` script and monitor references case-insensitively and preserves each job's interpreter pin for runtime validation.
+
+#### Kotoba requires Hy dispatch and runtime support
+
+Before the Hermes tick, the selected dispatcher must route `.hy` through `hy_main`, and each selected Python must import `hy.cmdline`; duplicate interpreter paths are probed once per profile tick.
+
+#### Kotoba refuses unsupported Hy dispatch
+
+A Python-only dispatcher is rejected before the profile tick, so a `.hy` file is never passed directly to Python as a cron job.
 
 #### Run mode refuses a live multiplexer
 
