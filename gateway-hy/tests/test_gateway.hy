@@ -117,15 +117,16 @@
     (.assertEqual self (get (split-chat-messages [{"role" "assistant" "content" "x"}]) 2) None))
 
 
+  ;; @lat: [[gateway-hy#Kotoba backend bridge#Desktop approval round trip]]
   (defn test-kotoba-backend-approval-bridge [self]
     (with [state (tempfile.TemporaryDirectory)]
       (setv bridge (os.path.join state "fake_bridge.py"))
       (with [f (open bridge "w" :encoding "utf-8")]
         (.write f (.join "" ["import json, sys\n"
                        "request=json.loads(sys.stdin.readline())\n"
-                       "print(json.dumps({'type':'approval.request','approval_id':'a-1','tool':'write_file','arguments':'{}','description':'Allow write?'}), flush=True)\n"
+                       "print(json.dumps({'type':'approval.request','request_id':'a-1','choices':['once','deny'],'tool':'write_file','arguments':'{}','description':'Allow write?'}), flush=True)\n"
                        "approval=json.loads(sys.stdin.readline())\n"
-                       "assert approval['type']=='approval' and approval['approval_id']=='a-1' and approval['approved'] is True\n"
+                       "assert approval['type']=='approval' and approval['request_id']=='a-1' and approval['choice']=='once'\n"
                        "print(json.dumps({'type':'event','event':{'event':'assistant','content':'done','tool-calls':0}}), flush=True)\n"
                        "print(json.dumps({'type':'result','result':{'final_response':'done','completed':True,'usage':{'input_tokens':1,'output_tokens':1,'total_tokens':2},'model':'test-model','provider':'test-provider'}}), flush=True)\n"])))
       (with [env (patch.dict os.environ
@@ -133,15 +134,19 @@
                              "ITONAMI_AGENT_TOOL_NAMES" "read_file"})]
         (let [agent []
               deltas []
+              approvals []
               cb (Callbacks :on_agent (fn [a] (.append agent a))
                             :on_delta (fn [d] (.append deltas d))
-                            :on_approval (fn [a] (.approve (get agent 0) (.get a "approval_id") True)))
+                            :on_approval (fn [a]
+                                           (.append approvals a)
+                                           (.approve (get agent 0) (.get a "request_id") "once")))
               result (.run-turn (KotobaBackend) :callbacks cb :user_message "hello"
                                 :history [] :instructions "" :model "hermes-agent")]
           (.assertTrue self (.get result "completed"))
           (.assertEqual self (.get result "final_response") "done")
           (.assertEqual self (get result "usage" "total_tokens") 2)
-          (.assertEqual self deltas ["done"]))))))
+          (.assertEqual self deltas ["done"])
+          (.assertEqual self (get approvals 0 "choices") ["once" "deny"]))))))
 
 (when (= __name__ "__main__")
   (unittest.main))

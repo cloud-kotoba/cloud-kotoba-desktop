@@ -17,13 +17,23 @@ Run events keep upstream names and key order (`event`, `run_id`, `timestamp`, â€
 
 ## Hermes Agent backend
 
-Each turn builds a Hermes Agent `AIAgent` in-process with upstream's own runtime helpers, so sessions persist to the profile's `state.db` exactly as upstream API turns do.
+The default backend builds a Hermes Agent `AIAgent` in-process with upstream's runtime helpers, so sessions persist to the profile's `state.db` exactly as upstream API turns do. `KOTOBA_GATEWAY_BACKEND=kotoba` selects the opt-in Kotoba backend, which starts `itonami-agent bridge` as a subprocess and passes the desktop history, instructions, profile, model, cwd and resolved API-server tool names.
 
-The helpers are `_resolve_runtime_agent_kwargs`, `_get_platform_tools(..., "api_server")`, and the fallback and reasoning config loaders.
+The Kotoba backend resolves enabled Hermes toolsets to concrete tool names before sending them. The CLJK bridge rejects any tool it does not implement before making a model call. Tool approvals use the desktop's `request_id` and `choice` (`once` or `deny`) contract; a denial is returned to the agent as a tool error without running the tool. This backend is opt-in until tool parity and a full desktop run are verified.
 
-The gateway runs under the Hermes venv's python (`HERMES_PYTHON`) with `cwd=HERMES_REPO`. Its only extra dependency is Hy, vendored into `gateway-hy/.deps` by `npm run gateway:deps`; nothing is installed into the Hermes venv. Tool approvals register a gateway notify that surfaces `approval.request`. A client disconnecting from the event stream interrupts the agent.
+The Hermes backend uses the helpers `_resolve_runtime_agent_kwargs`, `_get_platform_tools(..., "api_server")`, and the fallback and reasoning config loaders. The gateway runs under the Hermes venv's python (`HERMES_PYTHON`) with `cwd=HERMES_REPO`. Its only extra dependency is Hy, vendored into `gateway-hy/.deps` by `npm run gateway:deps`; nothing is installed into the Hermes venv. Hermes tool approvals register a gateway notify that surfaces `approval.request`. A client disconnecting from the event stream interrupts the active backend.
 
 An `echo` backend (`--backend echo`) needs no Hermes install and backs the contract tests.
+
+## Kotoba backend bridge
+
+The opt-in Kotoba backend connects the desktop run API to the CLJK Itonami agent over a JSONL subprocess protocol.
+
+The desktop's `request_id` and `choice` approval shape is preserved across the gateway and subprocess. Only `once` and `deny` are offered until session and permanent approval persistence are implemented; unsupported tool names fail closed before model execution.
+
+### Desktop approval round trip
+
+The backend sends an approval request to the desktop and returns the exact `request_id` and selected `choice` to the CLJK process before the tool can execute.
 
 ## Desktop integration
 
@@ -70,7 +80,7 @@ The interop test compiles that view and fails if any `hyx_` name appears.
 |---|---|---|
 | `server.hy` | `py/kotoba_gateway/server.py` | `gateway/platforms/api_server.py` (`APIServerAdapter` routes, `_require_auth`, `_handle_health`, `_handle_capabilities`, `_handle_models`); `api_server_openai_routes.py` (`_handle_chat_completions`, `hermes.tool.progress` frames) |
 | `runs.hy` | `py/kotoba_gateway/runs.py` | `gateway/platforms/api_server_runs.py` (`_run_event`, `_handle_runs`, `_handle_run_events`, `_handle_get_run`, `_handle_stop_run`, `terminal_run_status`) |
-| `backend.hy` | `py/kotoba_gateway/backend.py` | `APIServerAdapter._create_agent`; `api_server_runs._make_run_event_callback` (`_FIXED_EVENT_FIELDS`, `_USAGE_FIELDS`); calls `gateway/run.py` (`_resolve_runtime_agent_kwargs`, `_resolve_gateway_model`, `_load_gateway_config`, `_checkpoint_agent_kwargs`, `_current_max_iterations`), `run_agent.AIAgent`, `tools/approval.py` (`register_gateway_notify`), `tools/approval_context.py`, `hermes_state_registry.acquire` |
+| `backend.hy` | `py/kotoba_gateway/backend.py` | Default `HermesBackend` mirrors `APIServerAdapter._create_agent`; opt-in `KotobaBackend` bridges to `itonami-agent`; both map run events and usage into the desktop API contract. |
 | `identity.hy` | `py/kotoba_gateway/identity.py` | none upstream (Kotoba mesh); uses `cryptography` Ed25519 |
 | `ledger.hy` | `py/kotoba_gateway/ledger.py` | none upstream; block/head vocabulary follows `kotobase-federation` |
 | `peers.hy` | `py/kotoba_gateway/peers.py` | none upstream |
@@ -92,6 +102,7 @@ Upstream functions and the Hy definitions that take their place.
 | `_handle_capabilities` | `server.hy` `Handler.capabilities` |
 | `_handle_chat_completions` | `server.hy` `Handler.chat-completions` / `stream-chat` / `blocking-chat` |
 | `_handle_runs` / `_handle_run_events` / `_handle_get_run` / `_handle_stop_run` | `server.hy` `Handler.start-run` / `run-events` / `run-status` / `run-stop` |
+| `_handle_run_approval` | `server.hy` `Handler.run-approval` with the desktop `request_id` / `choice` contract |
 
 ## Decentralized mesh
 

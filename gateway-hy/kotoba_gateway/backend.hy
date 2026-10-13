@@ -67,15 +67,16 @@
     (with [self.stdin-lock]
       (.add self.pending-approvals approval-id)))
 
-  (defn approve [self approval-id approved]
+  (defn approve [self request-id choice]
     (with [self.stdin-lock]
-      (if (and (in approval-id self.pending-approvals)
+      (if (and (in request-id self.pending-approvals)
+               (in choice #{"once" "deny"})
                (is (.poll self.process) None))
           (do
-            (.discard self.pending-approvals approval-id)
+            (.discard self.pending-approvals request-id)
             (.write self.process.stdin
-                    (+ (json.dumps {"type" "approval" "approval_id" approval-id
-                                    "approved" (bool approved)}) "\n"))
+                    (+ (json.dumps {"type" "approval" "request_id" request-id
+                                    "choice" choice}) "\n"))
             (.flush self.process.stdin)
             True)
           False)))
@@ -106,8 +107,13 @@
         (do
           (ensure-hermes-path)
           (import gateway.run [_load_gateway_config]
-                  hermes_cli.tools_config [_get_platform_tools])
-          (sorted (_get_platform_tools (_load_gateway_config) "api_server")))))
+                  hermes_cli.tools_config [_get_platform_tools]
+                  toolsets [resolve_toolset])
+          (setv config (_load_gateway_config)
+                enabled-toolsets (_get_platform_tools config "api_server"))
+          (sorted (set (lfor toolset enabled-toolsets
+                        tool (resolve_toolset toolset)
+                        tool))))))
 
   (defn model-name [self] "kotoba-agent")
   (defn version [self] (or (os.environ.get "ITONAMI_AGENT_VERSION") "kotoba-agent"))
@@ -160,9 +166,10 @@
 
           (= (.get message "type") "approval.request")
           (do
-            (.add-pending handle (.get message "approval_id"))
+            (.add-pending handle (.get message "request_id"))
             (.on-approval (get turn "callbacks")
-                          {"approval_id" (.get message "approval_id")
+                          {"request_id" (.get message "request_id")
+                           "choices" (.get message "choices")
                            "tool" (.get message "tool")
                            "arguments" (.get message "arguments")
                            "description" (.get message "description")

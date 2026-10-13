@@ -210,7 +210,8 @@
                               (.put run (run-event rid "approval.request"
                                                    :description (str (.get data "description" ""))
                                                    :pattern_key (.get data "pattern_key")
-                                                   :approval_id (.get data "approval_id")
+                                                   :request_id (.get data "request_id")
+                                                   :choices (.get data "choices")
                                                    :tool (.get data "tool")
                                                    :arguments (.get data "arguments"))))
                :on_agent (fn [a] (setv run.agent a))))
@@ -505,17 +506,21 @@
     (setv body (.read-json self))
     (when (is body None) (return))
     (setv run (.get-run self.gateway.runs run-id)
-          approval-id (.get body "approval_id")
-          approved (.get body "approved"))
+          request-id (.get body "request_id")
+          choice (.get body "choice"))
     (when (is run None)
       (return (.send-error-json self 404 f"Run {run-id} not found." "run_not_found")))
-    (when-not (isinstance approved bool)
-      (return (.send-error-json self 400 "`approved` must be a boolean." "invalid_approval")))
-    (when (or (is run.agent None) (not (hasattr run.agent "approve")))
-      (return (.send-error-json self 409 "This run has no pending Kotoba tool approval." "approval_not_pending")))
-    (if (.approve run.agent approval-id approved)
+    (when-not (in choice #{"once" "deny"})
+      (return (.send-error-json self 400 "Invalid approval choice; expected once or deny."
+                                "invalid_approval_choice")))
+    (when (or (not request-id) (is run.agent None) (not (hasattr run.agent "approve")))
+      (return (.send-error-json self 409 "This run has no matching Kotoba tool approval."
+                                "approval_not_pending")))
+    (if (.approve run.agent request-id choice)
         (do (setv run.status "running")
-            (.send-json self 202 {"run_id" run-id "approval_id" approval-id "approved" approved}))
+            (.send-json self 202 {"object" "hermes.run.approval_response"
+                                  "run_id" run-id "request_id" request-id
+                                  "choice" choice "resolved" 1}))
         (.send-error-json self 409 "This approval is no longer pending." "approval_not_pending")))
 
   ;; -- mesh --
