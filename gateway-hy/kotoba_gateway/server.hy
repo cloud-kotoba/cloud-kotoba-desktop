@@ -51,7 +51,7 @@
 (setv MAX-BODY-BYTES (* 32 1024 1024)
       KEEPALIVE-SECONDS 15
       PROFILE-PREFIX-RE (re.compile r"^/p/[A-Za-z0-9_.-]+(/.*)$")
-      RUN-PATH-RE (re.compile r"^/v1/runs/([A-Za-z0-9_-]+)(/events|/stop)?$")
+      RUN-PATH-RE (re.compile r"^/v1/runs/([A-Za-z0-9_-]+)(/events|/stop|/approval)?$")
       BLOCK-PATH-RE (re.compile r"^/v1/blocks/([a-z2-7]+)$")
       SESSION-PATH-RE (re.compile r"^/v1/sessions/([A-Za-z0-9_.:-]+)/(head|pull)$")
       GOSSIP-SECONDS 120
@@ -65,6 +65,7 @@
        ["run_status" "GET" "/v1/runs/{run_id}"]
        ["run_events" "GET" "/v1/runs/{run_id}/events"]
        ["run_stop" "POST" "/v1/runs/{run_id}/stop"]
+       ["run_approval" "POST" "/v1/runs/{run_id}/approval"]
        ["node_manifest" "GET" "/.well-known/kotoba-node"]
        ["peers" "GET" "/v1/peers"]
        ["blocks" "GET" "/v1/blocks/{cid}"]
@@ -208,7 +209,10 @@
                               (setv run.status "waiting_for_approval")
                               (.put run (run-event rid "approval.request"
                                                    :description (str (.get data "description" ""))
-                                                   :pattern_key (.get data "pattern_key"))))
+                                                   :pattern_key (.get data "pattern_key")
+                                                   :approval_id (.get data "approval_id")
+                                                   :tool (.get data "tool")
+                                                   :arguments (.get data "arguments"))))
                :on_agent (fn [a] (setv run.agent a))))
     (defn work []
       (setv run.status "running")
@@ -356,6 +360,8 @@
       (.run-events self (.group run-match 1))
       (and run-match (= method "POST") (= (.group run-match 2) "/stop"))
       (.run-stop self (.group run-match 1))
+      (and run-match (= method "POST") (= (.group run-match 2) "/approval"))
+      (.run-approval self (.group run-match 1))
       True (.send-error-json self 404 f"No route for {method} {path}." "not_found")))
 
   (defn do_GET [self] (.dispatch self "GET"))
@@ -491,6 +497,26 @@
         (.send-json self 200 {"object" "hermes.run" "run_id" run-id
                               "status" (if (in run.status TERMINAL-STATUSES) run.status "stopping")})
         (.send-error-json self 404 f"Run {run-id} not found." "run_not_found")))
+
+  (defn run-approval [self run-id]
+    (when (!= self.principal "local")
+      (return (.send-error-json self 403 "Only the local desktop may resolve tool approvals."
+                                "approval_forbidden")))
+    (setv body (.read-json self))
+    (when (is body None) (return))
+    (setv run (.get-run self.gateway.runs run-id)
+          approval-id (.get body "approval_id")
+          approved (.get body "approved"))
+    (when (is run None)
+      (return (.send-error-json self 404 f"Run {run-id} not found." "run_not_found")))
+    (when-not (isinstance approved bool)
+      (return (.send-error-json self 400 "`approved` must be a boolean." "invalid_approval")))
+    (when (or (is run.agent None) (not (hasattr run.agent "approve")))
+      (return (.send-error-json self 409 "This run has no pending Kotoba tool approval." "approval_not_pending")))
+    (if (.approve run.agent approval-id approved)
+        (do (setv run.status "running")
+            (.send-json self 202 {"run_id" run-id "approval_id" approval-id "approved" approved}))
+        (.send-error-json self 409 "This approval is no longer pending." "approval_not_pending")))
 
   ;; -- mesh --
 

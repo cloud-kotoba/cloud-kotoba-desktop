@@ -1,10 +1,11 @@
 ;; Contract tests for the Hermes API surface, run against the echo backend
 ;; over real HTTP so the wire shapes the desktop parses are what we assert.
 
-(import json tempfile threading unittest
+(import json os shlex sys tempfile threading unittest
         urllib.request [Request urlopen]
-        urllib.error [HTTPError])
-(import kotoba_gateway.backend [EchoBackend]
+        urllib.error [HTTPError]
+        unittest.mock [patch])
+(import kotoba_gateway.backend [Callbacks EchoBackend KotobaBackend]
         kotoba_gateway.server [make-server split-chat-messages])
 
 (setv KEY "test-key-0123456789abcdef")
@@ -113,7 +114,34 @@
     (.assertEqual self instructions "s")
     (.assertEqual self history [{"role" "user" "content" "a"} {"role" "assistant" "content" "b"}])
     (.assertEqual self user "c")
-    (.assertEqual self (get (split-chat-messages [{"role" "assistant" "content" "x"}]) 2) None)))
+    (.assertEqual self (get (split-chat-messages [{"role" "assistant" "content" "x"}]) 2) None))
+
+
+  (defn test-kotoba-backend-approval-bridge [self]
+    (with [state (tempfile.TemporaryDirectory)]
+      (setv bridge (os.path.join state "fake_bridge.py"))
+      (with [f (open bridge "w" :encoding "utf-8")]
+        (.write f (.join "" ["import json, sys\n"
+                       "request=json.loads(sys.stdin.readline())\n"
+                       "print(json.dumps({'type':'approval.request','approval_id':'a-1','tool':'write_file','arguments':'{}','description':'Allow write?'}), flush=True)\n"
+                       "approval=json.loads(sys.stdin.readline())\n"
+                       "assert approval['type']=='approval' and approval['approval_id']=='a-1' and approval['approved'] is True\n"
+                       "print(json.dumps({'type':'event','event':{'event':'assistant','content':'done','tool-calls':0}}), flush=True)\n"
+                       "print(json.dumps({'type':'result','result':{'final_response':'done','completed':True,'usage':{'input_tokens':1,'output_tokens':1,'total_tokens':2},'model':'test-model','provider':'test-provider'}}), flush=True)\n"])))
+      (with [env (patch.dict os.environ
+                            {"ITONAMI_AGENT_COMMAND" (+ (shlex.quote sys.executable) " " (shlex.quote bridge))
+                             "ITONAMI_AGENT_TOOL_NAMES" "read_file"})]
+        (let [agent []
+              deltas []
+              cb (Callbacks :on_agent (fn [a] (.append agent a))
+                            :on_delta (fn [d] (.append deltas d))
+                            :on_approval (fn [a] (.approve (get agent 0) (.get a "approval_id") True)))
+              result (.run-turn (KotobaBackend) :callbacks cb :user_message "hello"
+                                :history [] :instructions "" :model "hermes-agent")]
+          (.assertTrue self (.get result "completed"))
+          (.assertEqual self (.get result "final_response") "done")
+          (.assertEqual self (get result "usage" "total_tokens") 2)
+          (.assertEqual self deltas ["done"]))))))
 
 (when (= __name__ "__main__")
   (unittest.main))
