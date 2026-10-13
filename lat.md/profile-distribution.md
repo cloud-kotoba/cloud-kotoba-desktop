@@ -162,7 +162,8 @@ Upstream's multiplexer visits every served profile every 60 s, whether or not an
 
 - **Index.** `ProfileIndex` stats every profile's `cron/jobs.json` once per rescan (60 s) and re-reads only changed files. A profile's due time is its earliest active job's `next_run_at`; an active job without one counts as due now.
 - **Heap.** One min-heap of `(due, profile)` with lazy invalidation. Idle cost per profile is one heap entry and one `stat` per minute.
-- **Bounded ticks.** At most `--max-turns` profiles tick at once (default half the cores). Upstream itself hands jobs to detached worker processes, so upstream's cron parallel limit still bounds the jobs themselves.
+- **Reserved ticks.** `--reserved-cron-profile` names share one extra bounded tick slot, so a critical profile can run while ordinary synchronous ticks wait on long agent jobs. Both scheduling and execution retain the lease checks. No reservation is enabled by default. Shutdown stops new dispatch and cancels unstarted ticks.
+- **Bounded ticks.** Ordinary profiles use at most `--max-turns` simultaneous ticks (default half the cores). An optional reserved pool adds one slot. Upstream tick waits for its submitted jobs; fire claims, profile scope and delivery remain upstream's.
 - **Housekeeping.** In run mode every profile is still ticked at least every 6 h, spread by name, so upstream's sweeps and heartbeats keep running for profiles with nothing due.
 - **Modes.** `--shard observe` indexes, schedules and records what would fire without executing anything, so it is safe next to a live multiplexer. `--shard run` ticks, and exits with 78 while an upstream multiplexer is live (`--shard-force` overrides), so no job runs twice.
 - **Status and cost.** `GET /v1/shard` reports profiles, jobs, heap size, fires, rescan time, CPU and memory. `--shard-report` prints per-profile cost (EMA of run duration) and fire rate from the last 7 days of `cron/executions.db`.
@@ -228,6 +229,14 @@ Observe mode records due profiles as fires without ever calling the tick.
 #### Concurrent ticks are bounded
 
 With six due profiles and `max-turns` 2, no more than two ticks run at once, and all six complete.
+
+#### Reserved profiles progress during slow ordinary ticks
+
+A reserved profile begins while an ordinary tick is blocked, using only one additional slot. Closing the host prevents another fire and cancels ticks that have not started.
+
+#### Reserved ticks retain lease checks
+
+A reserved profile without a lease is not dispatched. A reservation changes queue placement and grants no authority.
 
 #### Run mode refuses a live multiplexer
 
@@ -331,7 +340,7 @@ Spreading 949 cron-bearing profiles over the 9 schedulable Macs gives about 105 
 
 So compute is not what forces distribution: one node at 50% of five turns could carry today's load. Distribution buys isolation (one bad profile or node doesn't stall the rest), availability when the workstation sleeps, and headroom for growth. Placement weights should still follow measured cost, because three profiles (`mithril`, `kotobase-ldbc`, `otent`) account for a fifth of all busy time.
 
-Sizing rule: a node's `max-turns` bounds concurrent work, and its sustainable load is `Σ(cost EMA × fire rate)` over its profiles, which must stay below `max-turns` with headroom. The reconciler enforces this via queue latency, seeded with the measured cost EMAs from `--shard-report`.
+Sizing rule: ordinary work is bounded by `max-turns`; configured reserved profiles share one additional slot. Each pool's `Σ(cost EMA × fire rate)` must stay below its own worker count with headroom. The reconciler enforces this via queue latency, seeded with the measured cost EMAs from `--shard-report`.
 
 Upstream's idle overhead is about 0.7 threads and 2.8 open files per served profile. The heap design held all 1,015 profiles at 0.12% CPU, 4 threads and 18 files.
 

@@ -64,11 +64,12 @@
     (.assertEqual self (get index.entries "p7" "due") (+ T0 60))))
 
 (defclass Host [Fixture]
-  (defn host [self mode clock calls [max-turns 2] [on-tick None]]
+  (defn host [self mode clock calls [max-turns 2] [on-tick None] [reserved-profiles None]]
     (defn tick-fn [name home]
       (.append calls name)
       (when on-tick (on-tick name home)))
     (ShardHost (ProfileIndex self.home) tick-fn :mode mode :max-turns max-turns
+               :reserved-profiles reserved-profiles
                :rescan-seconds 30 :housekeeping-seconds 1e9 :clock clock))
 
   ;; @lat: [[profile-distribution#Shard host implementation#Tests#Only due profiles are ticked]]
@@ -117,6 +118,39 @@
     (.shutdown host.pool :wait True)
     (.assertEqual self (len calls) 6)
     (.assertEqual self (get state "peak") 2))
+
+  ;; @lat: [[profile-distribution#Shard host implementation#Tests#Reserved profiles progress during slow ordinary ticks]]
+  (defn test-reserved-profile-progress [self]
+    (.profile self "ordinary" [(job (- T0 2))])
+    (.profile self "itonami" [(job (- T0 1))])
+    (setv gate (threading.Event) ordinary-started (threading.Event) critical (threading.Event))
+    (defn on-tick [name home]
+      (if (= name "ordinary")
+          (do (.set ordinary-started) (.wait gate 2))
+          (.set critical))
+      (write-jobs home [(job (+ T0 86400))]))
+    (setv calls [] host (.host self "run" (Clock T0) calls :max-turns 1
+                       :on-tick on-tick :reserved-profiles ["itonami"]))
+    (try
+      (.step host)
+      (.assertTrue self (.wait ordinary-started 1))
+      (.assertTrue self (.wait critical 0.5))
+      (.assertFalse self (.is-set gate))
+      (.assertEqual self (get (.status host) "reserved_turns") 1)
+      (.assertEqual self (get (.status host) "reserved_profiles") ["itonami"])
+      (finally (.set gate) (.close host)))
+    (.assertEqual self (set calls) #{"ordinary" "itonami"})
+    (.assertTrue self host.closed)
+    (.fire host "itonami" T0 T0)
+    (.assertEqual self (len calls) 2))
+
+  ;; @lat: [[profile-distribution#Shard host implementation#Tests#Reserved ticks retain lease checks]]
+  (defn test-reserved-profile-lease-check [self]
+    (.profile self "itonami" [(job (- T0 1))])
+    (setv calls [] host (.host self "run" (Clock T0) calls :reserved-profiles ["itonami"]))
+    (setv host.allow (fn [name] False))
+    (try (.step host) (finally (.close host)))
+    (.assertEqual self calls []))
 
   ;; @lat: [[profile-distribution#Shard host implementation#Tests#Run mode refuses a live multiplexer]]
   (defn test-live-multiplexer-guard [self]

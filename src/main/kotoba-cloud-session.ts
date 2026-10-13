@@ -1,4 +1,4 @@
-// @lat: [[kotoba-cloud-account#Kotoba Cloud account#Passkey session]]
+// @lat: [[kotoba-cloud-account#Kotoba Cloud account#Device sign-in]]
 /**
  * The desktop's HTTP to kotoba.cloud.
  *

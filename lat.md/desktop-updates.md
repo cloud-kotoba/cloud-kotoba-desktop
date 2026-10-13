@@ -50,7 +50,9 @@ Electron Builder explicitly unpacks `node_modules/better-sqlite3/prebuilds/*.nod
 
 ### Platform package identity
 
-Linux packages use the space-free `/opt/Kotoba` directory while macOS uses the `Kotoba.app` bundle and executable name (this fork's product name; upstream's were `/opt/HermesOne` and `Hermes One.app`). RPM filenames retain the `.rpm` extension expected by release uploads.
+Linux packages use the space-free `/opt/Kotoba` directory while macOS uses the `Kotoba.app` bundle and executable name (this fork's product name; upstream's were `/opt/HermesOne` and `Hermes One.app`).
+
+RPM filenames retain the `.rpm` extension expected by release uploads.
 
 The global packaging product name supplies Electron Builder's Linux install-directory component. The explicit macOS `executableName` preserves its bundle path, and platform display labels read Kotoba. The Linux sandbox hook targets the same directory. [[tests/packaging-identity.test.ts]] validates the configuration with the installed Electron Builder schema and evaluates its real application metadata and artifact macros.
 
