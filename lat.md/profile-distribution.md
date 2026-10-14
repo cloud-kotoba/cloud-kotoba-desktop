@@ -148,7 +148,9 @@ With no `gateway.pid` and no live upstream multiplexer, a live process in `kotob
 
 #### A launchd-managed gateway is never stopped by the app
 
-A gateway the app did not start whose parent is launchd (pid 1), such as the shard gateway, is external: a config-change restart only checks its health instead of SIGTERMing it and spawning a second one. On 2026-10-14 that stop left every profile's scheduler down until the service was kickstarted.
+A gateway the app did not start whose parent is launchd (pid 1), such as the shard gateway, is external: a config-change restart only checks its health.
+
+Before, the restart SIGTERMed it and spawned a second one; on 2026-10-14 that left every profile's scheduler down until the service was kickstarted.
 
 #### Mutations invalidate the cache
 
