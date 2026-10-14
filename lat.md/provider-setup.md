@@ -10,6 +10,14 @@ Setup saves credentials and model configuration to the profile returned by the s
 
 The first-run gate is profile-aware: `checkInstall` decides whether setup is needed for the active profile, so [[src/renderer/src/App.tsx#App]] passes that profile into [[src/renderer/src/screens/Setup/Setup.tsx#Setup]]. Setup writes both `.env` and `config.yaml` to the same profile, preventing a named active profile from losing the key to the default workspace. Only the latest completed install check may update the setup profile, so an older check cannot overwrite the profile chosen by a newer startup attempt.
 
+## Keyless providers skip first-run setup
+
+The splash screen sends the user to setup when the active model's provider has no key. Providers in [[src/main/providers.ts#PROVIDERS_WITHOUT_API_KEYS]] never need one: local servers, `custom`, the Codex plan, and `murakumo`, whose card is `needsKey: false`.
+
+### A named murakumo provider counts as configured
+
+A config.yaml with `model.provider: murakumo` (a named `providers.murakumo` entry pointing at api.murakumo.cloud) is configured without any key in `.env`; before, it reopened first-run setup on every launch.
+
 ## Hermes One is the first-priority provider
 
 **Hermes One Inference** (`https://inference.hermesone.org/v1`) is Hermes One's own OpenAI-compatible gateway, listed **first** in `PROVIDERS.setup`, `PROVIDER_CARDS`, and the `SETTINGS_SECTIONS` "LLM Providers" items — so it leads the Add-provider picker.
