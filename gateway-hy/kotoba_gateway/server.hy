@@ -48,7 +48,8 @@
         kotoba_gateway.shard [ProfileIndex ShardHost cost-report live-multiplexer
                               upstream-heartbeat upstream-tick])
 
-(setv MAX-BODY-BYTES (* 32 1024 1024)
+(setv EXIT-GRACE-SECONDS 20
+      MAX-BODY-BYTES (* 32 1024 1024)
       KEEPALIVE-SECONDS 15
       PROFILE-PREFIX-RE (re.compile r"^/p/[A-Za-z0-9_.-]+(/.*)$")
       RUN-PATH-RE (re.compile r"^/v1/runs/([A-Za-z0-9_-]+)(/events|/stop)?$")
@@ -838,5 +839,15 @@
     (finally
       (when gateway.shard (.close gateway.shard :wait False))
       (.server_close server)
-      (remove-pid-file args.pid-file)))
+      (remove-pid-file args.pid-file)
+      ;; Exit for real. In-flight ticks run on non-daemon pool threads, and
+      ;; waiting for them kept a half-stopped process alive (2026-10-14: the
+      ;; loopback listener and scheduler gone, the tailnet listener still up),
+      ;; which launchd's KeepAlive cannot see as dead. Give them a moment,
+      ;; then leave; upstream's claim recovery handles an interrupted job.
+      (setv deadline (+ (time.monotonic) EXIT-GRACE-SECONDS))
+      (while (and gateway.shard gateway.shard.running (< (time.monotonic) deadline))
+        (time.sleep 0.5))
+      (sys.stdout.flush) (sys.stderr.flush)
+      (os._exit 0)))
   0)

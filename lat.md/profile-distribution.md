@@ -146,6 +146,10 @@ After the reuse window, only a profile whose cron file changed has its cron stat
 
 With no `gateway.pid` and no live upstream multiplexer, a live process in `kotoba-gateway.pid` (written by the gateway-hy shard gateway) makes the default profile's gateway read as running, so the status bar no longer says offline while it serves.
 
+#### A launchd-managed gateway is never stopped by the app
+
+A gateway the app did not start whose parent is launchd (pid 1), such as the shard gateway, is external: a config-change restart only checks its health instead of SIGTERMing it and spawning a second one. On 2026-10-14 that stop left every profile's scheduler down until the service was kickstarted.
+
 #### Mutations invalidate the cache
 
 A rename followed immediately by `listProfiles()` returns the new name, without waiting for the reuse window.

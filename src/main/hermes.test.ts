@@ -80,6 +80,7 @@ import {
   shouldForceCliForSessionOverride,
   stopHealthPolling,
   transcribeAudio,
+  isExternallyManagedGateway,
 } from "./hermes";
 import type { ChatCallbacks } from "./hermes";
 import { normalizeApprovalRequest } from "../shared/chat-approval";
@@ -550,5 +551,25 @@ describe("sendMessage session model override routing", () => {
         ],
       ),
     ).toBe(false);
+  });
+});
+
+describe("launchd-managed gateways", () => {
+  // @lat: [[profile-distribution#Desktop relief#Tests#A launchd-managed gateway is never stopped by the app]]
+  it("treats a pid the app did not start whose parent is launchd as external", async () => {
+    const { mkdirSync, writeFileSync, rmSync } = await import("fs");
+    const home = "/tmp/hermes-test-home";
+    mkdirSync(home, { recursive: true });
+    const body = JSON.stringify({ pid: 4242, kind: "kotoba-gateway" });
+    writeFileSync(`${home}/kotoba-gateway.pid`, body);
+    writeFileSync(`${home}/gateway.pid`, body);
+    try {
+      expect(isExternallyManagedGateway(undefined, () => 1)).toBe(true);
+      expect(isExternallyManagedGateway(undefined, () => 999)).toBe(false);
+    } finally {
+      rmSync(`${home}/kotoba-gateway.pid`, { force: true });
+      rmSync(`${home}/gateway.pid`, { force: true });
+    }
+    expect(isExternallyManagedGateway(undefined, () => 1)).toBe(false);
   });
 });
