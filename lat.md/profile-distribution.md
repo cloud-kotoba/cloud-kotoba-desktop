@@ -142,6 +142,16 @@ Simultaneous `listProfiles()` calls share one scan, a call within the reuse wind
 
 After the reuse window, only a profile whose cron file changed has its cron state read again; the others are served from the memo.
 
+#### The Hy shard gateway counts as the default's gateway
+
+With no `gateway.pid` and no live upstream multiplexer, a live process in `kotoba-gateway.pid` (written by the gateway-hy shard gateway) makes the default profile's gateway read as running, so the status bar no longer says offline while it serves.
+
+#### A launchd-managed gateway is never stopped by the app
+
+A gateway the app did not start whose parent is launchd (pid 1), such as the shard gateway, is external: a config-change restart only checks its health.
+
+On SIGTERM, the shard gateway stops every listener and drains active cron ticks before exiting. It does not force-exit workers after a fixed delay, so launchd cannot restart it until active ticks finish.
+
 #### Mutations invalidate the cache
 
 A rename followed immediately by `listProfiles()` returns the new name, without waiting for the reuse window.

@@ -1,12 +1,21 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const { hermesTestHome } = vi.hoisted(() => {
+  /* eslint-disable @typescript-eslint/no-require-imports */
+  const { mkdtempSync } = require("fs");
+  const { tmpdir } = require("os");
+  const path = require("path");
+  /* eslint-enable @typescript-eslint/no-require-imports */
+  return { hermesTestHome: mkdtempSync(path.join(tmpdir(), "hermes-test-home-")) as string };
+});
 
 // hermes.ts pulls in the full main-process import graph; mock the modules with
 // import-time side effects (installer → electron) and the two seams under
 // test (config's readEnv / secrets' providerListSafe). Everything else
 // (run-stream, url-key-map, …) is pure and loads for real.
 vi.mock("./installer", () => ({
-  HERMES_HOME: "/tmp/hermes-test-home",
-  HERMES_REPO: "/tmp/hermes-test-repo",
+  HERMES_HOME: hermesTestHome,
+  HERMES_REPO: `${hermesTestHome}/repo`,
   HERMES_PYTHON: "python3",
   hermesCliArgs: vi.fn(() => []),
   getEnhancedPath: vi.fn(() => ""),
@@ -38,10 +47,10 @@ vi.mock("./ssh-tunnel", () => ({
 vi.mock("./utils", () => ({
   pidIsAliveAs: vi.fn(() => false),
   stripAnsi: (s: string) => s,
-  profileHome: vi.fn(() => "/tmp/hermes-test-home"),
+  profileHome: vi.fn(() => hermesTestHome),
   profilePaths: vi.fn(() => ({
-    configFile: "/tmp/hermes-test-home/config.yaml",
-    envFile: "/tmp/hermes-test-home/.env",
+    configFile: `${hermesTestHome}/config.yaml`,
+    envFile: `${hermesTestHome}/.env`,
   })),
   normalizeProfileName: (p?: string) => p,
   getActiveProfileNameSync: vi.fn(() => undefined),
@@ -80,6 +89,7 @@ import {
   shouldForceCliForSessionOverride,
   stopHealthPolling,
   transcribeAudio,
+  isExternallyManagedGateway,
 } from "./hermes";
 import type { ChatCallbacks } from "./hermes";
 import { normalizeApprovalRequest } from "../shared/chat-approval";
@@ -551,4 +561,29 @@ describe("sendMessage session model override routing", () => {
       ),
     ).toBe(false);
   });
+});
+
+describe("launchd-managed gateways", () => {
+  // @lat: [[profile-distribution#Desktop relief#Tests#A launchd-managed gateway is never stopped by the app]]
+  it("treats a pid the app did not start whose parent is launchd as external", async () => {
+    const { mkdirSync, writeFileSync, rmSync } = await import("fs");
+    const home = hermesTestHome;
+    mkdirSync(home, { recursive: true });
+    const body = JSON.stringify({ pid: 4242, kind: "kotoba-gateway" });
+    writeFileSync(`${home}/kotoba-gateway.pid`, body);
+    writeFileSync(`${home}/gateway.pid`, body);
+    try {
+      expect(isExternallyManagedGateway(undefined, () => 1)).toBe(true);
+      expect(isExternallyManagedGateway(undefined, () => 999)).toBe(false);
+    } finally {
+      rmSync(`${home}/kotoba-gateway.pid`, { force: true });
+      rmSync(`${home}/gateway.pid`, { force: true });
+    }
+    expect(isExternallyManagedGateway(undefined, () => 1)).toBe(false);
+  });
+});
+
+afterAll(async () => {
+  const { rmSync } = await import("fs");
+  rmSync(hermesTestHome, { recursive: true, force: true });
 });

@@ -820,10 +820,13 @@
            :file sys.stderr :flush True)
     (.start placement))
   ;; Extra listeners (same handler), e.g. the tailnet address for peers.
+  ;; Retain each server so SIGTERM can stop every accept loop before draining.
+  (setv extra-servers [])
   (for [spec args.also-listen]
     (setv [h pt] (.rsplit spec ":" 1)
           extra (ThreadingHTTPServer #(h (int pt)) server.RequestHandlerClass))
     (setv extra.daemon_threads True)
+    (.append extra-servers extra)
     (.start (threading.Thread :target extra.serve_forever :daemon True))
     (print f"[kotoba-gateway] also listening on http://{h}:{pt}" :file sys.stderr :flush True))
   (write-pid-file args.pid-file)
@@ -836,7 +839,14 @@
   (try
     (.serve_forever server)
     (finally
-      (when gateway.shard (.close gateway.shard :wait False))
+      ;; Stop every listener first so no new request or scheduler work enters.
+      (for [extra extra-servers]
+        (.shutdown extra)
+        (.server_close extra))
       (.server_close server)
-      (remove-pid-file args.pid-file)))
+      ;; Drain active ticks; terminating a non-daemon worker mid-effect could
+      ;; replay a partially completed cron job after launchd restarts the host.
+      (when gateway.shard (.close gateway.shard :wait True))
+      (remove-pid-file args.pid-file)
+      (sys.stdout.flush) (sys.stderr.flush)))
   0)

@@ -1,4 +1,4 @@
-import { ChildProcess, spawn } from "child_process";
+import { ChildProcess, execFileSync, spawn } from "child_process";
 import { createHash, randomUUID } from "crypto";
 import {
   existsSync,
@@ -3726,6 +3726,39 @@ function readPidFileEntry(
 }
 
 /**
+ * The parent pid of `pid`, or null. POSIX only (`ps -o ppid=`).
+ */
+function parentPid(pid: number): number | null {
+  if (process.platform === "win32") return null;
+  try {
+    const out = execFileSync("ps", ["-o", "ppid=", "-p", String(pid)], {
+      encoding: "utf-8",
+      timeout: 2000,
+    }).trim();
+    const ppid = parseInt(out, 10);
+    return Number.isFinite(ppid) ? ppid : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A gateway the app did not start and launchd keeps alive (parent pid 1), such
+ * as the gateway-hy shard gateway (`cloud.kotoba.shard-gateway`). The app must
+ * not SIGTERM it on a config-change restart: launchd owns its lifecycle, and on
+ * 2026-10-14 such a stop left every profile's scheduler down until the service
+ * was kickstarted by hand.
+ */
+export function isExternallyManagedGateway(
+  profile: string | undefined,
+  ppidOf: (pid: number) => number | null = parentPid,
+): boolean {
+  if (appStartedProfiles.has(profileKey(profile))) return false;
+  const entry = readPidFileEntry(profile);
+  return entry !== null && ppidOf(entry.pid) === 1;
+}
+
+/**
  * Stop a single profile's gateway. Defaults to the active profile. By design
  * this only touches the named profile — switching profiles, app exit, etc.
  * must never take down a *different* profile's gateway (and its bots).
@@ -3740,6 +3773,12 @@ export function stopGateway(
     typeof profileOrForce === "boolean" ? profileOrForce : force;
   const key = profileKey(profile);
   if (!shouldForce && !appStartedProfiles.has(key)) return;
+  if (isExternallyManagedGateway(profile)) {
+    console.warn(
+      `[gateway] ${key}: served by a launchd-managed gateway the app did not start; leaving it running.`,
+    );
+    return;
+  }
 
   const proc = gatewayProcesses.get(key);
   if (proc && isChildProcessAlive(proc)) {
@@ -4104,6 +4143,8 @@ async function restartHyGatewayOnce(
   healthPollMs: number,
 ): Promise<boolean> {
   if (isRemoteMode()) return false;
+  // launchd owns it; it re-reads config per tick, so a restart is not ours to do.
+  if (isExternallyManagedGateway(profile)) return isApiServerReady(profile);
   stopGateway(profile, true);
   await new Promise((r) => setTimeout(r, 300));
   const started = startGatewayDetailed(profile);

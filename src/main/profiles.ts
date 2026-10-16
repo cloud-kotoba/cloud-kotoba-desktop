@@ -155,10 +155,18 @@ async function countSkills(profilePath: string): Promise<number> {
   }
 }
 
-/** Is the profile's OWN gateway (its gateway.pid) alive? The multiplexer
- *  case is answered from the per-scan snapshot before this is reached. */
+/** Is the profile's OWN gateway alive? Either upstream's gateway.pid or the
+ *  Kotoba Hy gateway's kotoba-gateway.pid (the shard gateway that replaces
+ *  upstream's multiplexer writes only the latter). The multiplexer case is
+ *  answered from the per-scan snapshot before this is reached. */
 async function ownGatewayRunning(profilePath: string): Promise<boolean> {
-  const pidFile = join(profilePath, "gateway.pid");
+  for (const name of ["gateway.pid", "kotoba-gateway.pid"]) {
+    if (await pidFileAlive(join(profilePath, name))) return true;
+  }
+  return false;
+}
+
+async function pidFileAlive(pidFile: string): Promise<boolean> {
   try {
     const raw = (await fs.readFile(pidFile, "utf-8")).trim();
     // The Python hermes CLI writes JSON: {"pid": <n>, "kind": ..., ...}.
