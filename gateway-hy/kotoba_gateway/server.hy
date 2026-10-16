@@ -46,12 +46,13 @@
         kotoba_gateway.runs [RunRegistry run-event TERMINAL-STATUSES]
         kotoba_gateway.placement [Placement]
         kotoba_gateway.shard [ProfileIndex ShardHost cost-report live-multiplexer
+                              kotoba-adopted-profile? kotoba-heartbeat kotoba-tick
                               upstream-heartbeat upstream-tick])
 
 (setv MAX-BODY-BYTES (* 32 1024 1024)
       KEEPALIVE-SECONDS 15
       PROFILE-PREFIX-RE (re.compile r"^/p/[A-Za-z0-9_.-]+(/.*)$")
-      RUN-PATH-RE (re.compile r"^/v1/runs/([A-Za-z0-9_-]+)(/events|/stop)?$")
+      RUN-PATH-RE (re.compile r"^/v1/runs/([A-Za-z0-9_-]+)(/events|/stop|/approval)?$")
       BLOCK-PATH-RE (re.compile r"^/v1/blocks/([a-z2-7]+)$")
       SESSION-PATH-RE (re.compile r"^/v1/sessions/([A-Za-z0-9_.:-]+)/(head|pull)$")
       GOSSIP-SECONDS 120
@@ -65,6 +66,7 @@
        ["run_status" "GET" "/v1/runs/{run_id}"]
        ["run_events" "GET" "/v1/runs/{run_id}/events"]
        ["run_stop" "POST" "/v1/runs/{run_id}/stop"]
+       ["run_approval" "POST" "/v1/runs/{run_id}/approval"]
        ["node_manifest" "GET" "/.well-known/kotoba-node"]
        ["peers" "GET" "/v1/peers"]
        ["blocks" "GET" "/v1/blocks/{cid}"]
@@ -208,7 +210,11 @@
                               (setv run.status "waiting_for_approval")
                               (.put run (run-event rid "approval.request"
                                                    :description (str (.get data "description" ""))
-                                                   :pattern_key (.get data "pattern_key"))))
+                                                   :pattern_key (.get data "pattern_key")
+                                                   :request_id (.get data "request_id")
+                                                   :choices (.get data "choices")
+                                                   :tool (.get data "tool")
+                                                   :arguments (.get data "arguments"))))
                :on_agent (fn [a] (setv run.agent a))))
     (defn work []
       (setv run.status "running")
@@ -356,6 +362,8 @@
       (.run-events self (.group run-match 1))
       (and run-match (= method "POST") (= (.group run-match 2) "/stop"))
       (.run-stop self (.group run-match 1))
+      (and run-match (= method "POST") (= (.group run-match 2) "/approval"))
+      (.run-approval self (.group run-match 1))
       True (.send-error-json self 404 f"No route for {method} {path}." "not_found")))
 
   (defn do_GET [self] (.dispatch self "GET"))
@@ -491,6 +499,30 @@
         (.send-json self 200 {"object" "hermes.run" "run_id" run-id
                               "status" (if (in run.status TERMINAL-STATUSES) run.status "stopping")})
         (.send-error-json self 404 f"Run {run-id} not found." "run_not_found")))
+
+  (defn run-approval [self run-id]
+    (when (!= self.principal "local")
+      (return (.send-error-json self 403 "Only the local desktop may resolve tool approvals."
+                                "approval_forbidden")))
+    (setv body (.read-json self))
+    (when (is body None) (return))
+    (setv run (.get-run self.gateway.runs run-id)
+          request-id (.get body "request_id")
+          choice (.get body "choice"))
+    (when (is run None)
+      (return (.send-error-json self 404 f"Run {run-id} not found." "run_not_found")))
+    (when (not (in choice #{"once" "deny"}))
+      (return (.send-error-json self 400 "Invalid approval choice; expected once or deny."
+                                "invalid_approval_choice")))
+    (when (or (not request-id) (is run.agent None) (not (hasattr run.agent "approve")))
+      (return (.send-error-json self 409 "This run has no matching Kotoba tool approval."
+                                "approval_not_pending")))
+    (if (.approve run.agent request-id choice)
+        (do (setv run.status "running")
+            (.send-json self 202 {"object" "hermes.run.approval_response"
+                                  "run_id" run-id "request_id" request-id
+                                  "choice" choice "resolved" 1}))
+        (.send-error-json self 409 "This approval is no longer pending." "approval_not_pending")))
 
   ;; -- mesh --
 
@@ -707,6 +739,9 @@
   ;; Shard host (profile distribution phase 2): tick only due profiles.
   (.add_argument p "--shard" :default (os.environ.get "KOTOBA_SHARD" "off")
                  :choices ["off" "observe" "run"])
+  (.add_argument p "--shard-scheduler" :default (os.environ.get "KOTOBA_SHARD_SCHEDULER" "kotoba")
+                 :choices ["hermes" "kotoba"]
+                 :help "run due profiles through Hermes or the Kotoba cron implementation")
   (.add_argument p "--max-turns" :type int
                  :default (int (os.environ.get "KOTOBA_SHARD_MAX_TURNS" (max 1 (// (or (os.cpu_count) 2) 2)))))
   (.add_argument p "--reserved-cron-profile" :action "append" :default []
@@ -778,7 +813,7 @@
     (print (json.dumps (cost-report home :nodes args.nodes :turns-per-node args.turns-per-node)
                        :indent 2 :ensure_ascii False))
     (return 0))
-  (when (and (= args.shard "run") (not args.shard-force))
+  (when (and (= args.shard "run") (= args.shard-scheduler "hermes") (not args.shard-force))
     (setv mux (live-multiplexer home))
     (when mux
       (print f"[kotoba-gateway] Refusing --shard run: upstream multiplexer pid {mux} is live and ticks the same profiles. Stop it first, or use --shard observe."
@@ -804,16 +839,28 @@
           gateway.placement placement))
   (when (!= args.shard "off")
     (setv gateway.shard (ShardHost (ProfileIndex home)
-                                   (if (= args.shard "run") (upstream-tick) None)
+                                   (if (!= args.shard "run") None
+                                       (if (= args.shard-scheduler "kotoba") (kotoba-tick home) (upstream-tick)))
                                    :mode args.shard :max-turns args.max-turns
                                    :reserved-profiles args.reserved_cron_profile
                                    :rescan-seconds args.shard-rescan-seconds
-                                   :heartbeat-fn (when (= args.shard "run") (upstream-heartbeat))
-                                   :allow (when placement (fn [name] (.allows placement name)))))
+                                   :heartbeat-fn (when (= args.shard "run")
+                                                   (if (= args.shard-scheduler "kotoba") (kotoba-heartbeat) (upstream-heartbeat)))
+                                   :allow (cond
+                                            (and placement (= args.shard-scheduler "kotoba"))
+                                            (fn [name]
+                                              (and (kotoba-adopted-profile? (if (= name "default") home
+                                                                                 (os.path.join home "profiles" name)))
+                                                   (.allows placement name)))
+                                            placement (fn [name] (.allows placement name))
+                                            (= args.shard-scheduler "kotoba")
+                                            (fn [name] (kotoba-adopted-profile? (if (= name "default") home
+                                                                                     (os.path.join home "profiles" name))))
+                                            True None)))
     (when placement
       (setv placement.on-change (fn [_] (.reapply-leases gateway.shard))))
     (.start gateway.shard)
-    (print f"[kotoba-gateway] shard {args.shard}: max-turns={args.max-turns} rescan={args.shard-rescan-seconds}s"
+    (print f"[kotoba-gateway] shard {args.shard} scheduler={args.shard-scheduler}: max-turns={args.max-turns} rescan={args.shard-rescan-seconds}s"
            :file sys.stderr :flush True))
   (when placement
     (print f"[kotoba-gateway] placement: operator={args.operator-did} version={(.version placement)} allowed={(len (.allowed-set placement))}"

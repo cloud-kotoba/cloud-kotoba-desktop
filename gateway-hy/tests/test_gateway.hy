@@ -1,11 +1,12 @@
 ;; Contract tests for the Hermes API surface, run against the echo backend
 ;; over real HTTP so the wire shapes the desktop parses are what we assert.
 
-(import json tempfile threading unittest
+(import json os shlex sys tempfile threading types unittest
         urllib.request [Request urlopen]
-        urllib.error [HTTPError])
-(import kotoba_gateway.backend [EchoBackend]
-        kotoba_gateway.server [make-server split-chat-messages])
+        urllib.error [HTTPError]
+        unittest.mock [patch])
+(import kotoba_gateway.backend [Callbacks EchoBackend KotobaBackend]
+        kotoba_gateway.server [Handler make-server split-chat-messages])
 
 (setv KEY "test-key-0123456789abcdef")
 
@@ -113,7 +114,66 @@
     (.assertEqual self instructions "s")
     (.assertEqual self history [{"role" "user" "content" "a"} {"role" "assistant" "content" "b"}])
     (.assertEqual self user "c")
-    (.assertEqual self (get (split-chat-messages [{"role" "assistant" "content" "x"}]) 2) None)))
+    (.assertEqual self (get (split-chat-messages [{"role" "assistant" "content" "x"}]) 2) None))
+
+
+  ;; @lat: [[gateway-hy#Kotoba backend bridge#Desktop approval round trip]]
+  (defn test-kotoba-backend-approval-bridge [self]
+    (with [state (tempfile.TemporaryDirectory)]
+      (setv bridge (os.path.join state "fake_bridge.py"))
+      (with [f (open bridge "w" :encoding "utf-8")]
+        (.write f (.join "" ["import json, sys\n"
+                       "request=json.loads(sys.stdin.readline())\n"
+                       "print(json.dumps({'type':'approval.request','request_id':'a-1','choices':['once','deny'],'tool':'write_file','arguments':'{}','description':'Allow write?'}), flush=True)\n"
+                       "approval=json.loads(sys.stdin.readline())\n"
+                       "assert approval['type']=='approval' and approval['request_id']=='a-1' and approval['choice']=='once'\n"
+                       "print(json.dumps({'type':'event','event':{'event':'assistant','content':'done','tool-calls':0}}), flush=True)\n"
+                       "print(json.dumps({'type':'result','result':{'final_response':'done','completed':True,'usage':{'input_tokens':1,'output_tokens':1,'total_tokens':2},'model':'test-model','provider':'test-provider'}}), flush=True)\n"])))
+      (with [env (patch.dict os.environ
+                            {"ITONAMI_AGENT_COMMAND" (+ (shlex.quote sys.executable) " " (shlex.quote bridge))
+                             "ITONAMI_AGENT_TOOL_NAMES" "read_file"})]
+        (let [agent []
+              deltas []
+              approvals []
+              cb (Callbacks :on_agent (fn [a] (.append agent a))
+                            :on_delta (fn [d] (.append deltas d))
+                            :on_approval (fn [a]
+                                           (.append approvals a)
+                                           (.approve (get agent 0) (.get a "request_id") "once")))
+              result (.run-turn (KotobaBackend) :callbacks cb :user_message "hello"
+                                :history [] :instructions "" :model "hermes-agent")]
+          (.assertTrue self (.get result "completed"))
+          (.assertEqual self (.get result "final_response") "done")
+          (.assertEqual self (get result "usage" "total_tokens") 2)
+          (.assertEqual self deltas ["done"])
+          (.assertEqual self (get approvals 0 "choices") ["once" "deny"])))))
+
+  ;; @lat: [[gateway-hy#Kotoba backend bridge#Run approval endpoint contract]]
+  (defn test-kotoba-run-approval-handler [self]
+    (let [calls []
+          run (types.SimpleNamespace :status "waiting_for_approval")
+          agent (types.SimpleNamespace :approve (fn [request-id choice]
+                                                  (.append calls [request-id choice]) True))
+          _ (setv run.agent agent)
+          runs (types.SimpleNamespace :get_run (fn [run-id] (if (= run-id "run-1") run None)))
+          handler (object.__new__ Handler)
+          result {}]
+      (setv handler.principal "local"
+            handler.gateway (types.SimpleNamespace :runs runs)
+            handler.raw_body (.encode (json.dumps {"request_id" "req-1" "choice" "once"}) "utf-8")
+            handler.send_json (fn [status payload] (.update result {"status" status "payload" payload}))
+            handler.send_error_json (fn [status message code]
+                                      (.update result {"status" status "error" message "code" code})))
+      (.run-approval handler "run-1")
+      (.assertEqual self run.status "running")
+      (.assertEqual self calls [["req-1" "once"]])
+      (.assertEqual self (get result "status") 202)
+      (.assertEqual self (get result "payload" "choice") "once")
+      (setv result {}
+            handler.raw_body (.encode (json.dumps {"request_id" "req-1" "choice" "session"}) "utf-8"))
+      (.run-approval handler "run-1")
+      (.assertEqual self (get result "status") 400)
+      (.assertEqual self calls [["req-1" "once"]]))))
 
 (when (= __name__ "__main__")
   (unittest.main))

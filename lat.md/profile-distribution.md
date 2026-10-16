@@ -166,16 +166,18 @@ The startup scan returns only the profiles whose `.env` contains `KOTOBA_API_KEY
 
 ## Shard host implementation
 
-Phase 2, implemented in `gateway-hy/kotoba_gateway/shard.hy`: one heap for every profile's cron schedule, calling upstream's own tick only for profiles that are due.
+Phase 2, implemented in `gateway-hy/kotoba_gateway/shard.hy`: one heap for every profile's cron schedule, dispatching only profiles that are due. `--shard-scheduler hermes` keeps the original upstream tick; `--shard-scheduler kotoba` dispatches to `itonami-agent cron tick` for profiles whose `itonami.edn` selects Kotoba and whose `gateway.parked` marker tells Hermes to skip them. Kotoba dispatch passes the Gateway's vendored Hy dependency path in `KOTOBA_HY_DEPS` so `.hy` scripts can run without installing Hy into Hermes' Python environment.
 
-Upstream's multiplexer visits every served profile every 60 s, whether or not anything is due: a liveness probe, the profile's cron lock, a `jobs.json` read, sweeps and a heartbeat write. The shard host replaces only that loop. Job execution, delivery, misfire grace and fire claims stay upstream's, because a due profile is handed to upstream `tick()` inside that profile's scope (`cron.scheduler_provider._profile_cron_scope`).
+Upstream's multiplexer visits every served profile every 60 s, whether or not anything is due: a liveness probe, the profile's cron lock, a `jobs.json` read, sweeps and a heartbeat write. The shard host replaces that loop. In Hermes mode, execution, delivery, misfire grace and fire claims stay upstream's. In Kotoba mode, due adopted profiles run through Kotoba cron; non-adopted profiles remain Hermes-owned and are excluded from the Kotoba shard.
 
 - **Index.** `ProfileIndex` stats every profile's `cron/jobs.json` once per rescan (60 s) and re-reads only changed files. A profile's due time is its earliest active job's `next_run_at`; an active job without one counts as due now.
 - **Heap.** One min-heap of `(due, profile)` with lazy invalidation. Idle cost per profile is one heap entry and one `stat` per minute.
 - **Reserved ticks.** `--reserved-cron-profile` names share one extra bounded tick slot, so a critical profile can run while ordinary synchronous ticks wait on long agent jobs. Both scheduling and execution retain the lease checks. No reservation is enabled by default. Shutdown stops new dispatch and cancels unstarted ticks.
-- **Bounded ticks.** Ordinary profiles use at most `--max-turns` simultaneous ticks (default half the cores). An optional reserved pool adds one slot. Upstream tick waits for its submitted jobs; fire claims, profile scope and delivery remain upstream's.
+- **Bounded ticks.** Ordinary profiles use at most `--max-turns` simultaneous ticks (default half the cores). An optional reserved pool adds one slot. Each selected backend waits for its profile tick to finish before the shard refreshes that profile's next due time.
 - **Housekeeping.** In run mode every profile is still ticked at least every 6 h, spread by name, so upstream's sweeps and heartbeats keep running for profiles with nothing due.
-- **Modes.** `--shard observe` indexes, schedules and records what would fire without executing anything, so it is safe next to a live multiplexer. `--shard run` ticks, and exits with 78 while an upstream multiplexer is live (`--shard-force` overrides), so no job runs twice.
+- **Modes.** `--shard observe` indexes, schedules and records what would fire without executing anything. `--shard` remains off by default; when run mode is explicitly enabled, Kotoba is the default scheduler. It selects only profiles with both Kotoba ownership and Hermes park markers, so it may coexist with Hermes. Hermes scheduling remains available with `--shard-scheduler hermes`, and exits with 78 while an upstream multiplexer is live (`--shard-force` overrides).
+- **Hy readiness.** Hermes mode verifies that Hermes' dispatcher selects its Hy bootstrap and that the selected Python can import `hy.cmdline`. Kotoba mode uses Kotoba's Hy runner; `itonami-agent` must be available through `ITONAMI_AGENT_BIN`, `PATH`, or `KOTOBA_CRON_COMMAND`.
+- **State.** Kotoba is the shard scheduler default, but shard run mode remains opt-in and only adopted profiles are eligible. The live gateway's scheduler ownership still depends on its launch configuration; each profile must first be adopted and its selected Python must have Hy available before Hy jobs run.
 - **Status and cost.** `GET /v1/shard` reports profiles, jobs, heap size, fires, rescan time, CPU and memory. `--shard-report` prints per-profile cost (EMA of run duration) and fire rate from the last 7 days of `cron/executions.db`.
 
 ### Measurements
@@ -247,6 +249,18 @@ A reserved profile begins while an ordinary tick is blocked, using only one addi
 #### Reserved ticks retain lease checks
 
 A reserved profile without a lease is not dispatched. A reservation changes queue placement and grants no authority.
+
+#### Kotoba detects registered Hy scripts
+
+The profile scanner finds `.hy` script and monitor references case-insensitively and preserves each job's interpreter pin for runtime validation.
+
+#### Kotoba requires Hy dispatch and runtime support
+
+Before the Hermes tick, the selected dispatcher must route `.hy` through `hy_main`, and each selected Python must import `hy.cmdline`; duplicate interpreter paths are probed once per profile tick.
+
+#### Kotoba refuses unsupported Hy dispatch
+
+A Python-only dispatcher is rejected before the profile tick, so a `.hy` file is never passed directly to Python as a cron job.
 
 #### Run mode refuses a live multiplexer
 

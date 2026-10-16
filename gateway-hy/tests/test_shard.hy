@@ -4,7 +4,7 @@
 (import json os sqlite3 tempfile threading time unittest
         datetime [datetime timezone timedelta])
 (import kotoba_gateway.shard [ProfileIndex ShardHost HOST-STALL-SECONDS cost-report live-multiplexer
-                              profile-schedule]
+                              profile-schedule profile-hy-references verify-hy-dispatch]
         kotoba_gateway.server [default-state-dir])
 
 (setv T0 1791500000.0)   ; 2026-10-08T... UTC, an arbitrary fixed "now"
@@ -62,6 +62,40 @@
     (write-jobs (os.path.join self.home "profiles" "p7") [(job (+ T0 60))])
     (.assertEqual self (.scan index T0) ["p7"])
     (.assertEqual self (get index.entries "p7" "due") (+ T0 60))))
+
+(defclass HyRuntime [Fixture]
+  ;; @lat: [[profile-distribution#Shard host implementation#Tests#Kotoba detects registered Hy scripts]]
+  (defn test-registered-script-and-monitor-hy-references [self]
+    (setv home (.profile self "hy-profile" [])
+          path (os.path.join home "cron" "jobs.json"))
+    (with [f (open path "w")]
+      (json.dump {"jobs" [{"script" "jobs/run.hy"
+                           "monitor_script" "checks/health.HY"
+                           "interpreter" None}
+                          {"script" "legacy.py"}
+                          {"script" "disabled.hy" "enabled" False}]}
+                 f))
+    (.assertEqual self (profile-hy-references home)
+                  [["jobs/run.hy" None] ["checks/health.HY" None]]))
+
+  ;; @lat: [[profile-distribution#Shard host implementation#Tests#Kotoba requires Hy dispatch and runtime support]]
+  (defn test-hy-runtime-checks-each-selected-python-once [self]
+    (setv refs [["one.hy" None] ["two.hy" None]] checked [])
+    (defn build [path interpreter]
+      [["/hermes/python" "-c" "from hy.cmdline import hy_main"] {} None])
+    (defn has-hy [python]
+      (.append checked python)
+      True)
+    (.assertEqual self (verify-hy-dispatch refs build has-hy) 2)
+    (.assertEqual self checked ["/hermes/python"])
+    (.assertRaisesRegex self RuntimeError "Hy is unavailable"
+      (fn [] (verify-hy-dispatch refs build (fn [python] False)))))
+
+  ;; @lat: [[profile-distribution#Shard host implementation#Tests#Kotoba refuses unsupported Hy dispatch]]
+  (defn test-hy-runtime-rejects-python-only-dispatch [self]
+    (defn build [path interpreter] [["/hermes/python" (str path)] {} None])
+    (.assertRaisesRegex self RuntimeError "does not route .hy"
+      (fn [] (verify-hy-dispatch [["job.hy" None]] build (fn [python] True))))))
 
 (defclass Host [Fixture]
   (defn host [self mode clock calls [max-turns 2] [on-tick None] [reserved-profiles None]]
