@@ -48,8 +48,7 @@
         kotoba_gateway.shard [ProfileIndex ShardHost cost-report live-multiplexer
                               upstream-heartbeat upstream-tick])
 
-(setv EXIT-GRACE-SECONDS 20
-      MAX-BODY-BYTES (* 32 1024 1024)
+(setv MAX-BODY-BYTES (* 32 1024 1024)
       KEEPALIVE-SECONDS 15
       PROFILE-PREFIX-RE (re.compile r"^/p/[A-Za-z0-9_.-]+(/.*)$")
       RUN-PATH-RE (re.compile r"^/v1/runs/([A-Za-z0-9_-]+)(/events|/stop)?$")
@@ -821,10 +820,13 @@
            :file sys.stderr :flush True)
     (.start placement))
   ;; Extra listeners (same handler), e.g. the tailnet address for peers.
+  ;; Retain each server so SIGTERM can stop every accept loop before draining.
+  (setv extra-servers [])
   (for [spec args.also-listen]
     (setv [h pt] (.rsplit spec ":" 1)
           extra (ThreadingHTTPServer #(h (int pt)) server.RequestHandlerClass))
     (setv extra.daemon_threads True)
+    (.append extra-servers extra)
     (.start (threading.Thread :target extra.serve_forever :daemon True))
     (print f"[kotoba-gateway] also listening on http://{h}:{pt}" :file sys.stderr :flush True))
   (write-pid-file args.pid-file)
@@ -837,17 +839,14 @@
   (try
     (.serve_forever server)
     (finally
-      (when gateway.shard (.close gateway.shard :wait False))
+      ;; Stop every listener first so no new request or scheduler work enters.
+      (for [extra extra-servers]
+        (.shutdown extra)
+        (.server_close extra))
       (.server_close server)
+      ;; Drain active ticks; terminating a non-daemon worker mid-effect could
+      ;; replay a partially completed cron job after launchd restarts the host.
+      (when gateway.shard (.close gateway.shard :wait True))
       (remove-pid-file args.pid-file)
-      ;; Exit for real. In-flight ticks run on non-daemon pool threads, and
-      ;; waiting for them kept a half-stopped process alive (2026-10-14: the
-      ;; loopback listener and scheduler gone, the tailnet listener still up),
-      ;; which launchd's KeepAlive cannot see as dead. Give them a moment,
-      ;; then leave; upstream's claim recovery handles an interrupted job.
-      (setv deadline (+ (time.monotonic) EXIT-GRACE-SECONDS))
-      (while (and gateway.shard gateway.shard.running (< (time.monotonic) deadline))
-        (time.sleep 0.5))
-      (sys.stdout.flush) (sys.stderr.flush)
-      (os._exit 0)))
+      (sys.stdout.flush) (sys.stderr.flush)))
   0)

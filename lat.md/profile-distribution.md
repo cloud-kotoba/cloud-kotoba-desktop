@@ -150,7 +150,7 @@ With no `gateway.pid` and no live upstream multiplexer, a live process in `kotob
 
 A gateway the app did not start whose parent is launchd (pid 1), such as the shard gateway, is external: a config-change restart only checks its health.
 
-Before, the restart SIGTERMed it and spawned a second one; on 2026-10-14 that left every profile's scheduler down until the service was kickstarted.
+On SIGTERM, the shard gateway stops every listener and drains active cron ticks before exiting. It does not force-exit workers after a fixed delay, so launchd cannot restart it until active ticks finish.
 
 #### Mutations invalidate the cache
 
