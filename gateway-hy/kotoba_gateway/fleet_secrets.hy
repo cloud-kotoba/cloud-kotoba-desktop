@@ -155,6 +155,12 @@
                     :if (is-not text None)
                     text))
   (setv out (merge-envs texts))
+  ;; Once broker leases are configured, old environment tokens must not
+  ;; survive a pending or denied request. The lease is the only GitHub
+  ;; credential source for this profile.
+  (when (.get cfg "github_lease")
+    (.pop out "GH_TOKEN" None)
+    (.pop out "GITHUB_TOKEN" None))
   (.update out (lease-env cfg profile :run run :state-dir state-dir))
   out)
 
